@@ -104,6 +104,11 @@ class TraceNode:
     # 来自子树的污染评分（不含自身 risk_score，用于识别中转地址）
     contamination_score: int = 0
 
+    # 汇聚信息：当多条路径指向此节点时，记录额外的父节点
+    # 修复：旧版 visited 直接跳过，导致分散→汇聚的洗钱模式不可见
+    converge_from: List[str] = field(default_factory=list)  # ["parent_addr:chain", ...]
+    in_degree: int = 1  # 入度（被几条路径指向，初始=1 表示首次发现的那条）
+
     @property
     def node_key(self) -> str:
         return f"{self.address}:{self.chain}"
@@ -129,6 +134,8 @@ class TraceNode:
             "subtree_max_risk":        self.subtree_max_risk,
             "subtree_blacklist_count": self.subtree_blacklist_count,
             "contamination_score":     self.contamination_score,
+            "in_degree":               self.in_degree,
+            "converge_from":           self.converge_from,
             "children": [c.to_dict() for c in self.children],
         }
 
@@ -159,6 +166,7 @@ class TraceGraph:
     def trace(self, address: str, chain: str = "ethereum") -> TraceNode:
         """入口：构建以 address 为根的溯源树，返回根节点。"""
         visited: Set[str] = set()
+        visited_nodes: Dict[str, TraceNode] = {}  # node_key → 已展开的节点引用
         total = [0]  # 用列表实现可变引用
 
         root = TraceNode(address=normalize(address), chain=chain, depth=0,
@@ -171,12 +179,18 @@ class TraceGraph:
             node = queue.popleft()
 
             if node.node_key in visited:
+                # 不展开，但记录汇聚信息（多条路径指向同一节点）
+                existing = visited_nodes.get(node.node_key)
+                if existing and node.parent_address:
+                    existing.converge_from.append(f"{node.parent_address}:{node.parent_chain}")
+                    existing.in_degree += 1
                 continue
             if total[0] >= self.max_nodes:
                 print(f"  [图分析] 已达节点上限 ({self.max_nodes})，停止展开")
                 break
 
             visited.add(node.node_key)
+            visited_nodes[node.node_key] = node
             total[0] += 1
 
             print(f"  [{'─'*node.depth}> 深度{node.depth}] {node.chain}:{node.address[:18]}...")

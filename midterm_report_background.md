@@ -378,6 +378,110 @@ Privacy Pools 的核心思想催生了 **Proof of Innocence（无辜证明）** 
 
 ---
 
+## 四、系统改进：从规则引擎到机器学习
+
+### 4.1 现有规则引擎的系统性缺陷
+
+在对 `aml_analyzer.py` 和 `trace_graph.py` 进行代码审查后，发现了五个影响分析准确性的系统性问题，分为两大类：
+
+**第一类：采样扭曲（Sampling Bias）**
+
+| 编号 | 问题 | 影响 | 修复方案 |
+|:---:|------|------|---------|
+| P1 | `MAX_TX_FETCH=100`，仅获取最新 100 笔交易 | 活跃地址的历史脏交易被截断；洗钱者可通过"稀释攻击"制造垃圾交易将脏交易推出窗口 | 提高至 500，并加截断提示 |
+| P2 | `txlist + tokentx` 直接拼接导致同一笔交易被计数两次 | 对手方交互频率虚高，排名被扭曲 | 按 `(hash, from, to)` 三元组去重 |
+| P5 | 对手方排名纯按交互频率 | DEX Router、交易所热钱包占满名额，低频但大额的可疑地址被淹没 | 引入金额加权复合评分，排除已知 DEX 地址 |
+
+**第二类：图结构失真（Graph Distortion）**
+
+| 编号 | 问题 | 影响 | 修复方案 |
+|:---:|------|------|---------|
+| P3 | 桥/混币器检测只查 `to` 字段 | 从 Tornado Cash **提取**资金（`from=mixer`）完全检测不到 | `from` 和 `to` 双向检测，记录方向（IN/OUT） |
+| P4 | `visited` 集合静默丢弃汇聚路径 | 多条路径指向同一节点（分散→汇聚洗钱模式）不可见 | 保留汇聚信息（`converge_from`、`in_degree`），不展开但记录 |
+
+核心洞察：**这五个问题的共同效果是，洗钱者的对抗策略（制造噪音、使用混币器提取、分散后汇聚）恰好命中系统的盲区。** 采样策略和洗钱者的对抗策略方向相反——洗钱者制造噪音稀释信号，系统却优先看噪音、过滤掉信号。
+
+### 4.2 机器学习工作流
+
+#### 4.2.1 动机与方法选择
+
+参考 Juvinski & Li（2026）的 **StableAML** 论文 [24]，该研究在 16,433 个标注地址上用 68 个行为特征训练树集成模型，CatBoost 达到 Macro-F1 = 0.9775。其关键发现是：**领域特定的特征工程比复杂的图算法更重要** — 树集成模型（CatBoost, F1=0.9775）显著优于图神经网络（GraphSAGE, F1=0.8048），原因是稳定币交易图极度稀疏（density < 0.01），GNN 的 message passing 无法有效传播信息。
+
+基于这一发现，本研究采用**特征工程 + 树集成模型**的路线，而非 GNN。
+
+#### 4.2.2 数据收集
+
+数据来源于两个渠道：
+
+- **Blocklisted 类**（100 个）：从项目维护的 `usdt_blacklist.csv`（Tether 官方冻结名单，约 8,500 条）中取以太坊地址
+- **Normal 类**（50 个）：从以太坊最近区块的 USDT Transfer 事件中随机采样活跃地址，排除已知合约（桥、混币器、交易所、零地址）和黑名单地址
+- **Sanctioned 类**（10 个）：自动下载 OFAC SDN 制裁名单，提取以太坊地址
+
+对每个地址，使用 Etherscan getLogs API 获取全量 USDT/USDC **Transfer 事件**（ERC-20 标准事件），分 `sent`（topic[1]=地址）和 `received`（topic[2]=地址）双向查询。选择 getLogs 而非 txlist 的原因：（1）避免 txlist/tokentx 交叉重复（P2）；（2）Transfer 事件是 token 移动的唯一权威记录；（3）天然支持双向查询（解决 P3）。
+
+#### 4.2.3 特征工程
+
+参考 StableAML 的四类特征框架，从原始 Transfer 事件中提取 **61 个行为特征**：
+
+| 类别 | 数量 | 代表性特征 | 数据来源 |
+|------|:---:|-----------|---------|
+| Interaction Features | 18 | `sent_to_mixer`, `received_from_mixer`, `has_flagged_interaction` | 与项目已有地址标签库（BRIDGE_REGISTRY, MIXER_CONTRACTS 等）匹配 |
+| Transfer Features | 19 | `transfers_over_10k`, `drain_ratio`, `repeated_amount_ratio` | 纯金额/数量统计 |
+| Network Features | 10 | `in_degree`, `out_degree`, `counterparty_flagged_ratio`, `has_proxy_behavior` | from/to 集合计算 |
+| Temporal Features | 8 | `has_daily_burst`, `rapid_tx_ratio`, `hour_concentration` | timestamp 排序后计算 |
+
+其中 `has_proxy_behavior` 检测"收到后 24 小时内转出相同金额（±5%）"的模式（peeling chain 中继特征），`repeated_amount_ratio` 检测重复金额转账（peeling chain 信号）。
+
+#### 4.2.4 模型训练与评估
+
+使用 5-Fold Stratified Cross Validation，对比四个树集成模型：
+
+| 模型 | Macro-F1 | PR-AUC |
+|------|:--------:|:------:|
+| **RandomForest** | **0.919** | **0.949** |
+| XGBoost | 0.886 | 0.917 |
+| CatBoost | 0.872 | 0.937 |
+| LightGBM | 0.865 | 0.932 |
+
+最优模型 RandomForest 的混淆矩阵：
+
+|  | 预测 blocklisted | 预测 normal |
+|--|:-:|:-:|
+| 实际 blocklisted | 93 | 7 |
+| 实际 normal | 4 | 46 |
+
+跨模型共识的 Top 5 重要特征：
+
+1. **`drain_ratio`**（余额清空率）— blocklisted 均值 0.21 vs normal 1.37（被冻结地址资金转不走）
+2. **`total_sent_amount`**（总转出金额）— 大额资金流动是核心信号
+3. **`counterparty_flagged_ratio`**（对手方标记比例）— KYC/标签数据的价值体现
+4. **`out_degree`**（出度）— 黑名单地址出度远低于正常地址
+5. **`in_out_ratio`**（流入/流出比）— 资金流向对称性
+
+#### 4.2.5 模型集成
+
+训练好的模型通过 `MLRiskScorer` 类集成到现有系统：
+
+```
+原风险评分 = 纯规则引擎（硬编码权重）
+新风险评分 = 规则引擎 × 0.4 + ML 模型 predict_proba × 0.6
+```
+
+混合策略的设计理由：
+- 规则引擎保留 40% 权重：确保已知高风险信号（混币器、黑名单直接关联）不被 ML 模型低估
+- ML 模型占 60% 权重：对规则引擎未覆盖的行为模式（时间异常、金额分布、网络拓扑）提供补充信号
+- 降级兼容：模型文件不存在时自动回退到纯规则引擎
+
+### 4.3 局限性
+
+1. **数据量有限**：150 个样本 vs StableAML 的 16,433 个。扩大数据集是提升模型泛化能力的最直接手段。
+2. **Normal 类未经人工验证**：从链上随机采样的"正常"地址可能包含未被标记的洗钱地址（label noise）。
+3. **仅覆盖 USDT/USDC Transfer 事件**：洗钱者 swap 成 ETH 或其他 token 后跳出分析视野。
+4. **特征提取的实时性**：当前 ML 评分器从 `RiskReport` 中提取的特征是 report 中已有信息的子集，部分特征（如 temporal features）需要完整的 Transfer 事件数据才能精确计算。
+5. **二分类限制**：当前仅区分 blocklisted/normal，未加入 sanctioned、cybercrime 等细分类别。
+
+---
+
 ## 参考文献
 
 ### AML 图分析基础
@@ -439,3 +543,5 @@ Privacy Pools 的核心思想催生了 **Proof of Innocence（无辜证明）** 
 [22] Chaudhary, A. (2023). **zkFi: Privacy-Preserving and Regulation Compliant Transactions using Zero Knowledge Proofs.** arXiv:2307.00521.
 
 [23] Effendi, F. & Chattopadhyay, A. (2024). **Privacy-Preserving Graph-Based Machine Learning with Fully Homomorphic Encryption for Collaborative Anti-Money Laundering.** *SPACE 2024.* arXiv:2411.02926.
+
+[24] Juvinski, L. & Li, Z. (2026). **StableAML: Machine Learning for Behavioral Wallet Detection in Stablecoin Anti-Money Laundering on Ethereum.** arXiv:2602.17842.

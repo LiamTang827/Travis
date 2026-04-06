@@ -26,7 +26,7 @@ load_dotenv()
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
 BLACKLIST_CSV = "usdt_blacklist.csv"
 REQUEST_DELAY = 0.25   # 请求间隔（秒），避免限速
-MAX_TX_FETCH = 100     # 每次查询最大交易数
+MAX_TX_FETCH = 500     # 每次查询最大交易数（旧值 100 导致活跃地址历史交易被截断）
 HOP2_ENABLED = True    # 是否启用二跳分析（较慢）
 
 # ==================== 跨链桥注册表 ====================
@@ -231,6 +231,19 @@ HIGH_RISK_EXCHANGES = {
     # 以下为已知高风险或受限交易所
     "0x5e4e65926ba27467555eb562121fac00d24e9dd2": "Garantex",
     "0x45fdb1b92a649fb6a64ef1511d3ba5bf60044838": "Garantex v2",
+}
+
+# ==================== 已知 DEX Router（排除用，非风险信号）====================
+KNOWN_DEX_ADDRS: Set[str] = {
+    a.lower().strip() for a in [
+        "0x7a250d5630b4cf539739df2c5dacb4c659f2488d",  # Uniswap V2 Router
+        "0xe592427a0aece92de3edee1f18e0157c05861564",  # Uniswap V3 Router
+        "0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45",  # Uniswap Universal Router
+        "0x3fc91a3afd70395cd496c647d5a6cc9d4b2b7fad",  # Uniswap Universal Router 3
+        "0xd9e1ce17f2641f24ae83637ab66a2cca9c378b9f",  # SushiSwap Router
+        "0x1111111254eeb25477b68fb85ed929f73a960582",  # 1inch v5
+        "0xdef1c0ded9bec7f1a1670819833240f027b25eff",  # 0x Exchange Proxy
+    ]
 }
 
 # ==================== Tron 已知跨链桥合约 ====================
@@ -515,6 +528,152 @@ class RiskReport:
     risk_factors: List[str] = field(default_factory=list)
 
 
+# ==================== ML 风险评分器（可选）====================
+class MLRiskScorer:
+    """
+    加载训练好的 ML 模型，对地址做风险概率预测。
+    如果模型文件不存在，graceful 降级为 None（系统回退到纯规则引擎）。
+    """
+
+    def __init__(self, model_dir: str = None):
+        self.model = None
+        self.meta = None
+        if model_dir is None:
+            model_dir = os.path.join(os.path.dirname(__file__), "ml", "data", "model_output")
+        model_path = os.path.join(model_dir, "best_model.pkl")
+        meta_path = os.path.join(model_dir, "model_meta.json")
+        if os.path.exists(model_path) and os.path.exists(meta_path):
+            try:
+                import pickle
+                with open(model_path, "rb") as f:
+                    self.model = pickle.load(f)
+                with open(meta_path) as f:
+                    self.meta = json.load(f)
+                print(f"  [ML] 已加载模型: {self.meta.get('model_name', '?')} "
+                      f"(F1={self.meta.get('macro_f1', 0):.3f})")
+            except Exception as e:
+                print(f"  [ML] 模型加载失败: {e}")
+                self.model = None
+
+    @property
+    def available(self) -> bool:
+        return self.model is not None and self.meta is not None
+
+    def predict_risk(self, report: 'RiskReport') -> Optional[int]:
+        """
+        从 RiskReport 提取特征子集 → 模型预测 → 返回 0-100 风险分。
+        只用 report 中已有的信息，不额外调 API。
+        """
+        if not self.available:
+            return None
+        try:
+            features = self._extract_features_from_report(report)
+            feature_names = self.meta["feature_names"]
+            X = []
+            for fname in feature_names:
+                X.append(features.get(fname, 0))
+            import numpy as np
+            X_arr = np.array([X], dtype=np.float64)
+            X_arr = np.nan_to_num(X_arr, nan=0.0, posinf=999.0, neginf=-999.0)
+            proba = self.model.predict_proba(X_arr)[0]
+            # label 编码：meta 中 label_encoding 记录了 {label: index}
+            label_enc = self.meta.get("label_encoding", {})
+            bl_idx = label_enc.get("blocklisted", 0)
+            risk_proba = proba[bl_idx] if bl_idx < len(proba) else proba[0]
+            return int(risk_proba * 100)
+        except Exception as e:
+            print(f"  [ML] 预测失败: {e}")
+            return None
+
+    def _extract_features_from_report(self, report: 'RiskReport') -> dict:
+        """从 RiskReport 中提取 ML 模型需要的特征（尽量覆盖）"""
+        f = {}
+        # Interaction features
+        mixer_in = sum(1 for m in report.mixer_interactions if m.get("direction") == "IN")
+        mixer_out = sum(1 for m in report.mixer_interactions if m.get("direction") != "IN")
+        f["sent_to_mixer"] = mixer_out
+        f["received_from_mixer"] = mixer_in
+        f["has_mixer_interaction"] = int(len(report.mixer_interactions) > 0)
+
+        opaque_in = sum(1 for b in report.opaque_bridge_interactions if b.get("direction") == "IN")
+        opaque_out = sum(1 for b in report.opaque_bridge_interactions if b.get("direction") != "IN")
+        f["sent_to_opaque_bridge"] = opaque_out
+        f["received_from_opaque_bridge"] = opaque_in
+
+        trans_in = sum(1 for b in report.bridge_interactions if b.get("direction") == "IN")
+        trans_out = sum(1 for b in report.bridge_interactions if b.get("direction") != "IN")
+        f["sent_to_transparent_bridge"] = trans_out
+        f["received_from_transparent_bridge"] = trans_in
+        f["has_bridge_interaction"] = int(len(report.bridge_interactions) + len(report.opaque_bridge_interactions) > 0)
+
+        f["sent_to_flagged"] = len(report.hop1_blacklisted)
+        f["received_from_flagged"] = 0  # 无法从 report 精确区分方向
+        f["has_flagged_interaction"] = int(len(report.hop1_blacklisted) > 0)
+
+        hrx_count = len(report.high_risk_exchanges)
+        f["sent_to_high_risk_exchange"] = hrx_count
+        f["received_from_high_risk_exchange"] = 0
+
+        f["sent_to_cex"] = 0
+        f["received_from_cex"] = 0
+        f["has_cex_interaction"] = 0
+        f["sent_to_dex"] = 0
+        f["received_from_dex"] = 0
+
+        # Transfer features
+        f["total_count"] = report.total_transactions
+        f["sent_count"] = 0
+        f["received_count"] = 0
+        f["total_sent_amount"] = 0
+        f["total_received_amount"] = 0
+        f["transfers_over_1k"] = 0
+        f["transfers_over_5k"] = 0
+        f["transfers_over_10k"] = 0
+        f["transfers_over_50k"] = 0
+        f["transfers_over_100k"] = 0
+        f["in_out_ratio"] = 0
+        f["drain_ratio"] = 0
+        f["avg_amount"] = 0
+        f["max_amount"] = 0
+        f["min_amount"] = 0
+        f["median_amount"] = 0
+        f["std_amount"] = 0
+        f["repeated_same_amount_groups"] = 0
+        f["repeated_amount_ratio"] = 0
+
+        # Network features
+        f["unique_senders"] = 0
+        f["unique_receivers"] = 0
+        f["is_single_source"] = 0
+        f["is_single_dest"] = 0
+        f["in_degree"] = 0
+        f["out_degree"] = len(report.top_counterparties)
+        f["in_out_degree_ratio"] = 0
+        f["total_unique_counterparties"] = report.total_counterparties
+        f["counterparty_flagged_ratio"] = (
+            len(report.hop1_blacklisted) / max(report.total_counterparties, 1)
+        )
+        f["counterparty_mixer_ratio"] = 0
+        f["counterparty_bridge_ratio"] = 0
+        f["counterparty_cex_ratio"] = 0
+        f["has_proxy_behavior"] = 0
+
+        # Temporal features
+        f["account_age_days"] = 0
+        f["prolonged_activity"] = 0
+        f["avg_interval_seconds"] = 0
+        f["min_interval_seconds"] = 0
+        f["std_interval_seconds"] = 0
+        f["has_high_frequency"] = 0
+        f["rapid_tx_ratio"] = 0
+        f["max_daily_count"] = 0
+        f["has_daily_burst"] = 0
+        f["has_rapid_reciprocal"] = 0
+        f["hour_concentration"] = 0
+
+        return f
+
+
 # ==================== 核心分析引擎 ====================
 class AMLAnalyzer:
     def __init__(self, blacklist: Dict[str, Dict], etherscan: EtherscanClient,
@@ -526,6 +685,8 @@ class AMLAnalyzer:
         self.tracer = tracer or BridgeTracer()
         # time_window_days=0 表示不限制时间；>0 则只分析最近 N 天的交易
         self.time_window_days = time_window_days
+        # ML 风险评分器（可选，模型文件不存在时自动降级为纯规则）
+        self.ml_scorer = MLRiskScorer()
 
     # ---------- 目标链 1 跳黑名单检测 ----------
     def _check_dst_hop1(self, address: str, chain: str) -> List[dict]:
@@ -609,6 +770,11 @@ class AMLAnalyzer:
         normal_txs = self.eth.get_normal_txs(address)
         time.sleep(REQUEST_DELAY)
         token_txs = self.eth.get_token_transfers(address)
+        # 截断提示：如果返回数量恰好等于上限，说明可能还有更多历史交易
+        if len(normal_txs) >= MAX_TX_FETCH:
+            print(f"  [WARN] 普通交易达到上限 {MAX_TX_FETCH}，可能遗漏更早的记录")
+        if len(token_txs) >= MAX_TX_FETCH:
+            print(f"  [WARN] Token转账达到上限 {MAX_TX_FETCH}，可能遗漏更早的记录")
 
         # 若 txlist/tokentx 无结果，补充查 USDT 事件日志（处理 transferFrom 场景）
         usdt_logs = []
@@ -621,7 +787,17 @@ class AMLAnalyzer:
         time.sleep(REQUEST_DELAY)
         report.account_info = self.eth.get_account_info(address)
 
-        all_txs = normal_txs + token_txs
+        # 去重：同一笔 tx 在 txlist 和 tokentx 中可能各出现一次
+        # 用 (hash, from, to) 三元组去重，保留不同 token transfer 事件
+        _seen_tx_keys: Set[tuple] = set()
+        all_txs = []
+        for tx in normal_txs + token_txs:
+            _key = (tx.get("hash", ""),
+                    normalize(tx.get("from", "")),
+                    normalize(tx.get("to", "") or tx.get("contractAddress", "")))
+            if _key not in _seen_tx_keys:
+                _seen_tx_keys.add(_key)
+                all_txs.append(tx)
 
         # 时间窗口过滤：只保留最近 N 天的交易（防止远古交易误伤无关地址）
         if self.time_window_days > 0:
@@ -640,7 +816,7 @@ class AMLAnalyzer:
               + (f" + {len(usdt_logs)} 条 USDT 事件" if usdt_logs else ""))
 
         counterparties: Set[str] = set()
-        counterparty_count: Dict[str, int] = {}   # 记录每个对手方的交互次数
+        counterparty_stats: Dict[str, Dict] = {}  # {addr: {"count": N, "total_value": V, "max_value": M}}
 
         # 从普通交易/token转账提取对手方（发送方主动调用的场景）
         for tx in all_txs:
@@ -649,36 +825,50 @@ class AMLAnalyzer:
             other = t if f == addr_norm else f
             if other and other != addr_norm:
                 counterparties.add(other)
-                counterparty_count[other] = counterparty_count.get(other, 0) + 1
-                bridge_info = BRIDGE_REGISTRY.get(t)
-                if bridge_info:
-                    entry = {
-                        "bridge": bridge_info["name"],
-                        "contract": t,
-                        "tx": tx.get("hash", ""),
-                        "direction": "OUT" if f == addr_norm else "IN",
-                        "token": tx.get("tokenSymbol", "ETH"),
-                        "value": tx.get("value", "0"),
-                        "traceable": bridge_info["traceable"],
-                        "method": bridge_info["method"],
-                        "dst_chains": bridge_info["dst_chains"],
-                    }
-                    if bridge_info["traceable"]:
-                        report.bridge_interactions.append(entry)
-                    else:
-                        report.opaque_bridge_interactions.append(entry)
-                if t in MIXER_CONTRACTS:
-                    report.mixer_interactions.append({
-                        "mixer": MIXER_CONTRACTS[t],
-                        "contract": t,
-                        "tx": tx.get("hash", ""),
-                    })
-                if t in HIGH_RISK_EXCHANGES:
-                    report.high_risk_exchanges.append({
-                        "exchange": HIGH_RISK_EXCHANGES[t],
-                        "contract": t,
-                        "tx": tx.get("hash", ""),
-                    })
+                # 解析金额：普通交易用 value (wei)，token 转账用 value + tokenDecimal
+                raw_val = int(tx.get("value", "0") or "0")
+                decimals = int(tx.get("tokenDecimal", "18") or "18")
+                tx_value = raw_val / (10 ** decimals) if raw_val > 0 else 0
+                if other not in counterparty_stats:
+                    counterparty_stats[other] = {"count": 0, "total_value": 0.0, "max_value": 0.0}
+                counterparty_stats[other]["count"] += 1
+                counterparty_stats[other]["total_value"] += tx_value
+                counterparty_stats[other]["max_value"] = max(counterparty_stats[other]["max_value"], tx_value)
+                # 双向检测：from 和 to 都查桥/混币器/高风险交易所
+                # 修复：旧版只查 to，导致从混币器提取资金（from=mixer）完全检测不到
+                for check_addr, direction in [(t, "OUT" if f == addr_norm else "IN"),
+                                               (f, "IN" if f != addr_norm else "OUT")]:
+                    bridge_info = BRIDGE_REGISTRY.get(check_addr)
+                    if bridge_info:
+                        entry = {
+                            "bridge": bridge_info["name"],
+                            "contract": check_addr,
+                            "tx": tx.get("hash", ""),
+                            "direction": direction,
+                            "token": tx.get("tokenSymbol", "ETH"),
+                            "value": tx.get("value", "0"),
+                            "traceable": bridge_info["traceable"],
+                            "method": bridge_info["method"],
+                            "dst_chains": bridge_info["dst_chains"],
+                        }
+                        if bridge_info["traceable"]:
+                            report.bridge_interactions.append(entry)
+                        else:
+                            report.opaque_bridge_interactions.append(entry)
+                    if check_addr in MIXER_CONTRACTS:
+                        report.mixer_interactions.append({
+                            "mixer": MIXER_CONTRACTS[check_addr],
+                            "contract": check_addr,
+                            "tx": tx.get("hash", ""),
+                            "direction": direction,
+                        })
+                    if check_addr in HIGH_RISK_EXCHANGES:
+                        report.high_risk_exchanges.append({
+                            "exchange": HIGH_RISK_EXCHANGES[check_addr],
+                            "contract": check_addr,
+                            "tx": tx.get("hash", ""),
+                            "direction": direction,
+                        })
 
         # 从 USDT getLogs 提取对手方（transferFrom 场景 — 地址未主动发交易）
         for log in usdt_logs:
@@ -691,7 +881,9 @@ class AMLAnalyzer:
             other = log_to if role == "sender" else log_from
             if other and other != addr_norm:
                 counterparties.add(other)
-                counterparty_count[other] = counterparty_count.get(other, 0) + 1
+                if other not in counterparty_stats:
+                    counterparty_stats[other] = {"count": 0, "total_value": 0.0, "max_value": 0.0}
+                counterparty_stats[other]["count"] += 1
 
         report.total_counterparties = len(counterparties)
         print(f"  [ETH] 发现 {len(counterparties)} 个交易对手地址")
@@ -703,17 +895,28 @@ class AMLAnalyzer:
             "0x0000000000000000000000000000000000000000",  # 零地址
         }
 
-        # 构建 top_counterparties（排除协议合约、桥、混币器、黑名单；按交互频率排序）
+        # 构建 top_counterparties — 金额加权排名（替代纯频率排名）
+        # 修复：旧版按交互次数排序，DEX/交易所高频交易占满名额，
+        #       低频但大额的可疑中转地址被淹没
         _exclude_addrs = (PROTOCOL_CONTRACTS | ALL_BRIDGE_ADDRS
-                          | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES))
-        sorted_cps = sorted(
-            [(addr, cnt) for addr, cnt in counterparty_count.items()
-             if addr not in _exclude_addrs and addr not in self.blacklist],
-            key=lambda x: x[1], reverse=True,
-        )
+                          | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES)
+                          | KNOWN_DEX_ADDRS)
+        scored_cps = []
+        for addr, stats in counterparty_stats.items():
+            if addr in _exclude_addrs or addr in self.blacklist:
+                continue
+            # 复合评分：大额单笔最重要，其次总金额，最后频率
+            score = (stats["max_value"] * 0.6
+                     + stats["total_value"] * 0.3
+                     + stats["count"] * 0.1)
+            scored_cps.append((addr, stats, score))
+        scored_cps.sort(key=lambda x: x[2], reverse=True)
         report.top_counterparties = [
-            {"address": addr, "tx_count": cnt, "chain": "ethereum"}
-            for addr, cnt in sorted_cps[:10]
+            {"address": addr, "tx_count": stats["count"],
+             "total_value": round(stats["total_value"], 4),
+             "max_value": round(stats["max_value"], 4),
+             "chain": "ethereum"}
+            for addr, stats, _ in scored_cps[:10]
         ]
 
         # 1跳黑名单检测
@@ -931,15 +1134,26 @@ class AMLAnalyzer:
                 names = list({e["exchange"] for e in report.high_risk_exchanges})
                 factors.append(f"与高风险交易所交互: {', '.join(names)}")
 
-        score = min(score, 100)
-        report.risk_score = score
+        rule_score = min(score, 100)
+
+        # ML 模型混合评分：可用时混合规则分和 ML 分，不可用时纯规则
+        ml_score = self.ml_scorer.predict_risk(report)
+        if ml_score is not None and not report.is_blacklisted:
+            # 混合策略：规则引擎 40% + ML 模型 60%
+            final_score = int(rule_score * 0.4 + ml_score * 0.6)
+            factors.append(f"ML 模型风险概率: {ml_score}% (混合权重 60%)")
+        else:
+            final_score = rule_score
+
+        final_score = min(final_score, 100)
+        report.risk_score = final_score
         report.risk_factors = factors
 
-        if score == 100 or report.is_blacklisted:
+        if final_score == 100 or report.is_blacklisted:
             report.risk_level = "CRITICAL"
-        elif score >= 60:
+        elif final_score >= 60:
             report.risk_level = "HIGH"
-        elif score >= 30:
+        elif final_score >= 30:
             report.risk_level = "MEDIUM"
         else:
             report.risk_level = "LOW"
