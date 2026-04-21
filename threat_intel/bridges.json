@@ -1,0 +1,131 @@
+{
+  "_comment": "跨链桥合约地址库。traceable=true 表示可追踪对端地址；false 表示不透明桥，风险等同混币器。",
+
+  "contracts": {
+    "0x8731d54e9d02c286767d56ac03e8037c07e01e98": {
+      "name": "Stargate Finance Router", "traceable": true,
+      "method": "layerzero_api", "dst_chains": ["arbitrum","optimism","polygon","bsc","avalanche"]
+    },
+    "0x296f55f8fb28e498b858d0bcda06d955b2cb3f97": {
+      "name": "Stargate Finance STG", "traceable": true,
+      "method": "layerzero_api", "dst_chains": []
+    },
+    "0x3e4a3a4796d16c0cd582c382691998f7c06420b6": {
+      "name": "Hop Protocol USDT", "traceable": true,
+      "method": "hop_api", "dst_chains": ["arbitrum","optimism","polygon","gnosis"]
+    },
+    "0x3666f603cc164936c1b87e207f36beba4ac5f18a": {
+      "name": "Hop Protocol USDC", "traceable": true,
+      "method": "hop_api", "dst_chains": ["arbitrum","optimism","polygon"]
+    },
+    "0xb8901acb165ed027e32754e0ffe830802919727f": {
+      "name": "Hop Protocol ETH Bridge", "traceable": true,
+      "method": "hop_api", "dst_chains": ["arbitrum","optimism"]
+    },
+    "0x914f986a44acb623a277d6bd17368171fcbe4273": {
+      "name": "Hop Protocol USDC Bridge", "traceable": true,
+      "method": "hop_api", "dst_chains": ["arbitrum","optimism"]
+    },
+    "0x5427fefa711eff984124bfbb1ab6fbf5e3da1820": {
+      "name": "Celer cBridge v2", "traceable": true,
+      "method": "cbridge_api", "dst_chains": []
+    },
+    "0x9d39fc627a6d9d9f8c831c16995b209548cc3401": {
+      "name": "Celer cBridge v1", "traceable": true,
+      "method": "cbridge_api", "dst_chains": []
+    },
+    "0x4d9079bb4165aeb4084c526a32695dcfd2f77381": {
+      "name": "Across Protocol v2", "traceable": true,
+      "method": "across_api", "dst_chains": []
+    },
+    "0x5c7bcd6e7de5423a257d81b442095a1a6ced35c5": {
+      "name": "Across Protocol v3", "traceable": true,
+      "method": "across_api", "dst_chains": []
+    },
+    "0x3ee18b2214aff97000d974cf647e7c347e8fa585": {
+      "name": "Wormhole Token Bridge", "traceable": true,
+      "method": "wormhole_api", "dst_chains": []
+    },
+    "0x98f3c9e6e3face36baad05fe09d375ef1464288b": {
+      "name": "Wormhole Core Bridge", "traceable": true,
+      "method": "wormhole_api", "dst_chains": []
+    },
+    "0x43de2d77bf8027e25dbd179b491e8d64f38398aa": {
+      "name": "deBridge Gate", "traceable": true,
+      "method": "debridge_api", "dst_chains": []
+    },
+    "0x66a71dcef29a0ffbdbe3c6a460a3b5bc225cd675": {
+      "name": "LayerZero Endpoint v1", "traceable": true,
+      "method": "layerzero_api", "dst_chains": []
+    },
+    "0x1a44076050125825900e736c501f859c50fe728c": {
+      "name": "LayerZero Endpoint v2", "traceable": true,
+      "method": "layerzero_api", "dst_chains": []
+    },
+    "0xa0c68c638235ee32657e8f720a23cec1bfc77c77": {
+      "name": "Polygon PoS Bridge", "traceable": true,
+      "method": "event_logs_rollup", "dst_chains": ["polygon"]
+    },
+    "0x40ec5b33f54e0e8a33a975908c5ba1c14e5bbbdf": {
+      "name": "Polygon ERC20 Predicate", "traceable": true,
+      "method": "event_logs_rollup", "dst_chains": ["polygon"]
+    },
+    "0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a": {
+      "name": "Arbitrum Bridge", "traceable": true,
+      "method": "event_logs_rollup", "dst_chains": ["arbitrum"]
+    },
+    "0x4dbd4fc535ac27206064b68ffcf827b0a60bab3f": {
+      "name": "Arbitrum Inbox", "traceable": true,
+      "method": "event_logs_rollup", "dst_chains": ["arbitrum"]
+    },
+    "0x99c9fc46f92e8a1c0dec1b1747d010903e884be1": {
+      "name": "Optimism Gateway", "traceable": true,
+      "method": "event_logs_rollup", "dst_chains": ["optimism"]
+    },
+    "0x25ace71c97b33cc4729cf772ae268934f7ab5fa1": {
+      "name": "Optimism Messenger", "traceable": true,
+      "method": "event_logs_rollup", "dst_chains": ["optimism"]
+    },
+    "0xce16f69375520ab01377ce7b88f5ba8c48f8d666": {
+      "name": "SquidRouter v1", "traceable": true,
+      "method": "axelar_api", "dst_chains": []
+    },
+    "0xea749fd6ba492dbc14c24fe8a3d08769229b896c": {
+      "name": "SquidRouter v2", "traceable": true,
+      "method": "axelar_api", "dst_chains": []
+    },
+    "0x8898b472c54c31894e3b9bb83cea802a5d0e63c6": {
+      "name": "Connext Diamond", "traceable": true,
+      "method": "connext_api", "dst_chains": []
+    },
+    "0xb8f275fbf7a959f4bce59999a2ef122a099e81a8": {
+      "name": "Symbiosis", "traceable": true,
+      "method": "symbiosis_api", "dst_chains": []
+    },
+
+    "0xc564ee9f21ed8a2d8e7e76c085740d5e4c5fafbe": {
+      "name": "Multichain Router v4", "traceable": false,
+      "method": null, "dst_chains": []
+    },
+    "0x765277eebeca2e31912c9946eae1021199b39c61": {
+      "name": "Multichain Router v6", "traceable": false,
+      "method": null, "dst_chains": []
+    },
+    "0x80c67432656d59144ceff962e8faf8926599bcf8": {
+      "name": "Orbiter Finance", "traceable": false,
+      "method": null, "dst_chains": []
+    },
+    "0x2796317b0ff8538f253012862c06787adfb8ceb": {
+      "name": "Synapse Bridge", "traceable": false,
+      "method": null, "dst_chains": []
+    },
+    "0x1116898dda4015ed8ddefb84b6e8bc24528af2d8": {
+      "name": "Synapse Router", "traceable": false,
+      "method": null, "dst_chains": []
+    },
+    "0x5474f9c8f4a2c8a8e14de5c785c0b9d3e5b18d6d": {
+      "name": "Owlto Finance", "traceable": false,
+      "method": null, "dst_chains": []
+    }
+  }
+}

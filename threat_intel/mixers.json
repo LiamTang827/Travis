@@ -1,0 +1,15 @@
+{
+  "_comment": "混币器合约地址。key=合约地址(小写), value=名称。新增时只加这里。",
+  "contracts": {
+    "0x47ce0c6ed5b0ce3d3a51fdb1c52dc66a7c3c2936": "Tornado Cash 0.1 ETH",
+    "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf": "Tornado Cash 1 ETH",
+    "0xa160cdab225685da1d56aa342ad8841c3b53f291": "Tornado Cash 10 ETH",
+    "0xd4b88df4d29f5cedd6857912842cff3b20c8cfa3": "Tornado Cash 100 ETH",
+    "0xfd8610d20aa15b7b2e3be39b396a1bc3516c7144": "Tornado Cash 1000 ETH",
+    "0x07687e702b410fa43f4cb4af7fa097918ffd2730": "Tornado Cash USDC",
+    "0x23773e65ed146a459667fd7b0fc7ebcddbebf32": "Tornado Cash DAI",
+    "0x12d66f87a04a9e220c9d50f0a8c1f856591900aa": "Tornado Cash USDC 100",
+    "0xd691f27f38b395b1b196747234ba8e57c9162cf5": "eXch",
+    "0x0000000000000000000000000000000000000000": "_placeholder"
+  }
+}

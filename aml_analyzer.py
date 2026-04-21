@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-AML 风险识别系统 - USDT黑名单关联地址分析
-功能：跨链桥资金追踪 + 黑名单关联检测 + AML风险评分
-支持链：Ethereum / Tron
+Travis — TRAceable Verification Intelligence System
+链上 AML 风险分析引擎：黑名单关联检测 + 比例污染传播 + 多链跨链追踪
+支持链：Ethereum / BSC / Polygon / Arbitrum / Optimism / Avalanche / Base / Tron
 """
 
 import csv
@@ -19,183 +19,125 @@ import os
 
 import requests
 from dotenv import load_dotenv
+from threat_intel import (
+    MIXER_CONTRACTS, BRIDGE_REGISTRY, ALL_BRIDGE_ADDRS, OPAQUE_BRIDGE_ADDRS,
+    EXCHANGE_HOT_WALLETS, HIGH_RISK_EXCHANGES, HIGH_RISK_EXCHANGES_FLAT,
+    EXCHANGE_HOT_WALLETS_FLAT, ALL_EXCHANGE_ADDRS, DEPOSIT_DETECTION_PARAMS,
+)
 
 load_dotenv()
 
 # ==================== 配置 ====================
-ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
 BLACKLIST_CSV = "usdt_blacklist.csv"
-REQUEST_DELAY = 0.25   # 请求间隔（秒），避免限速
-MAX_TX_FETCH = 500     # 每次查询最大交易数（旧值 100 导致活跃地址历史交易被截断）
+REQUEST_DELAY = 0.25   # 每次 API 请求后的等待时间（秒），Etherscan 免费档限速 5 req/s
+PAGE_SIZE = 500        # 每页拉取条数（Etherscan 最大支持 10000，但越大单次越慢）
+MAX_PAGES = 5          # 最多翻多少页（PAGE_SIZE × MAX_PAGES = 最大历史深度）
+                       # 默认 5 页 × 500 = 2500 条，覆盖普通活跃地址的完整历史
+                       # 对交易所热钱包等超活跃地址，依赖时间窗口（--days）截断
 HOP2_ENABLED = True    # 是否启用二跳分析（较慢）
 
-# ==================== 跨链桥注册表 ====================
-# traceable=True  : 可追踪对端地址（源链→目标链有明确对应关系）
-# traceable=False : 不透明桥（资金流向不可追踪，风险等同混币器）
-# method          : 未来实现追踪时使用的 API/解析方式
-# dst_chains      : 已知目标链（rollup 类桥固定目标链）
-BRIDGE_REGISTRY: Dict[str, Dict] = {
-    # ---------- 透明桥（traceable=True）----------
-    # Stargate Finance（LayerZero 驱动，可通过 LZ Scan API 追踪）
-    "0x8731d54e9d02c286767d56ac03e8037c07e01e98": {
-        "name": "Stargate Finance Router", "traceable": True,
-        "method": "layerzero_api", "dst_chains": ["arbitrum", "optimism", "polygon", "bsc", "avalanche"],
-    },
-    "0x296f55f8fb28e498b858d0bcda06d955b2cb3f97": {
-        "name": "Stargate Finance STG", "traceable": True,
-        "method": "layerzero_api", "dst_chains": [],
-    },
-    # Hop Protocol（每笔转账有唯一 transferId，可关联两端）
-    "0x3e4a3a4796d16c0cd582c382691998f7c06420b6": {
-        "name": "Hop Protocol (USDT)", "traceable": True,
-        "method": "hop_api", "dst_chains": ["arbitrum", "optimism", "polygon", "gnosis"],
-    },
-    "0x3666f603cc164936c1b87e207f36beba4ac5f18a": {
-        "name": "Hop Protocol (USDC)", "traceable": True,
-        "method": "hop_api", "dst_chains": ["arbitrum", "optimism", "polygon"],
-    },
-    "0xb8901acb165ed027e32754e0ffe830802919727f": {
-        "name": "Hop Protocol (ETH Bridge)", "traceable": True,
-        "method": "hop_api", "dst_chains": ["arbitrum", "optimism"],
-    },
-    "0x914f986a44acb623a277d6bd17368171fcbe4273": {
-        "name": "Hop Protocol (USDC Bridge)", "traceable": True,
-        "method": "hop_api", "dst_chains": ["arbitrum", "optimism"],
-    },
-    # Celer cBridge（有官方 API，可通过 transferId 关联）
-    "0x5427fefa711eff984124bfbb1ab6fbf5e3da1820": {
-        "name": "Celer cBridge v2", "traceable": True,
-        "method": "cbridge_api", "dst_chains": [],
-    },
-    "0x9d39fc627a6d9d9f8c831c16995b209548cc3401": {
-        "name": "Celer cBridge v1", "traceable": True,
-        "method": "cbridge_api", "dst_chains": [],
-    },
-    # Across Protocol（官方 API，deposit/fill 可关联）
-    "0x4d9079bb4165aeb4084c526a32695dcfd2f77381": {
-        "name": "Across Protocol v2", "traceable": True,
-        "method": "across_api", "dst_chains": [],
-    },
-    "0x5c7bcd6e7de5423a257d81b442095a1a6ced35c5": {
-        "name": "Across Protocol v3", "traceable": True,
-        "method": "across_api", "dst_chains": [],
-    },
-    # Wormhole（VAA 序列号关联两端）
-    "0x3ee18b2214aff97000d974cf647e7c347e8fa585": {
-        "name": "Wormhole Token Bridge", "traceable": True,
-        "method": "wormhole_api", "dst_chains": [],
-    },
-    "0x98f3c9e6e3face36baad05fe09d375ef1464288b": {
-        "name": "Wormhole Core Bridge", "traceable": True,
-        "method": "wormhole_api", "dst_chains": [],
-    },
-    # deBridge（有官方 API）
-    "0x43de2d77bf8027e25dbd179b491e8d64f38398aa": {
-        "name": "deBridge Gate", "traceable": True,
-        "method": "debridge_api", "dst_chains": [],
-    },
-    # LayerZero（LZ Scan API 直接返回 src/dst tx 和地址）
-    "0x66a71dcef29a0ffbdbe3c6a460a3b5bc225cd675": {
-        "name": "LayerZero Endpoint v1", "traceable": True,
-        "method": "layerzero_api", "dst_chains": [],
-    },
-    "0x1a44076050125825900e736c501f859c50fe728c": {
-        "name": "LayerZero Endpoint v2", "traceable": True,
-        "method": "layerzero_api", "dst_chains": [],
-    },
-    # Polygon 官方桥（Rollup，事件日志含目标地址）
-    "0xa0c68c638235ee32657e8f720a23cec1bfc77c77": {
-        "name": "Polygon PoS Bridge", "traceable": True,
-        "method": "event_logs_rollup", "dst_chains": ["polygon"],
-    },
-    "0x40ec5b33f54e0e8a33a975908c5ba1c14e5bbbdf": {
-        "name": "Polygon ERC20 Predicate", "traceable": True,
-        "method": "event_logs_rollup", "dst_chains": ["polygon"],
-    },
-    # Arbitrum 官方桥（Rollup，事件日志含目标地址）
-    "0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a": {
-        "name": "Arbitrum Bridge", "traceable": True,
-        "method": "event_logs_rollup", "dst_chains": ["arbitrum"],
-    },
-    "0x4dbd4fc535ac27206064b68ffcf827b0a60bab3f": {
-        "name": "Arbitrum Inbox", "traceable": True,
-        "method": "event_logs_rollup", "dst_chains": ["arbitrum"],
-    },
-    # Optimism 官方桥（Rollup，事件日志含目标地址）
-    "0x99c9fc46f92e8a1c0dec1b1747d010903e884be1": {
-        "name": "Optimism Gateway", "traceable": True,
-        "method": "event_logs_rollup", "dst_chains": ["optimism"],
-    },
-    "0x25ace71c97b33cc4729cf772ae268934f7ab5fa1": {
-        "name": "Optimism Messenger", "traceable": True,
-        "method": "event_logs_rollup", "dst_chains": ["optimism"],
-    },
-    # SquidRouter (Axelar 协议，有 Axelarscan API)
-    "0xce16f69375520ab01377ce7b88f5ba8c48f8d666": {
-        "name": "SquidRouter v1", "traceable": True,
-        "method": "axelar_api", "dst_chains": [],
-    },
-    "0xea749fd6ba492dbc14c24fe8a3d08769229b896c": {
-        "name": "SquidRouter v2", "traceable": True,
-        "method": "axelar_api", "dst_chains": [],
-    },
-    # Connext（有 Connext Explorer API）
-    "0x8898b472c54c31894e3b9bb83cea802a5d0e63c6": {
-        "name": "Connext Diamond", "traceable": True,
-        "method": "connext_api", "dst_chains": [],
-    },
-    # Symbiosis
-    "0xb8f275fbf7a959f4bce59999a2ef122a099e81a8": {
-        "name": "Symbiosis", "traceable": True,
-        "method": "symbiosis_api", "dst_chains": [],
-    },
+# 向后兼容
+MAX_TX_FETCH = PAGE_SIZE
 
-    # ---------- 不透明桥（traceable=False，风险等同混币器）----------
-    # Multichain (Anyswap) - 2023年崩溃，资金池模式，进出无法对应
-    "0xc564ee9f21ed8a2d8e7e76c085740d5e4c5fafbe": {
-        "name": "Multichain Router v4", "traceable": False,
-        "method": None, "dst_chains": [],
-    },
-    "0x765277eebeca2e31912c9946eae1021199b39c61": {
-        "name": "Multichain Router v6", "traceable": False,
-        "method": None, "dst_chains": [],
-    },
-    # Orbiter Finance - Maker 模式，你的资金先入 maker 地址，再由 maker 在目标链转出
-    # 无法从链上数据直接关联收款人
-    "0x80c67432656d59144ceff962e8faf8926599bcf8": {
-        "name": "Orbiter Finance", "traceable": False,
-        "method": None, "dst_chains": [],
-    },
-    # Synapse - 流动性池模式，多用户资金混入同一池后转出
-    "0x2796317b0ff8538f253012862c06787adfb8ceb": {
-        "name": "Synapse Bridge", "traceable": False,
-        "method": None, "dst_chains": [],
-    },
-    "0x1116898dda4015ed8ddefb84b6e8bc24528af2d8": {
-        "name": "Synapse Router", "traceable": False,
-        "method": None, "dst_chains": [],
-    },
-    # Owlto Finance - Maker 模式（同 Orbiter）
-    "0x5474f9c8f4a2c8a8e14de5c785c0b9d3e5b18d6d": {
-        "name": "Owlto Finance", "traceable": False,
-        "method": None, "dst_chains": [],
-    },
+# ==================== 风险类别权重（参考 FATF 风险等级）====================
+CATEGORY_WEIGHTS: Dict[str, float] = {
+    "ofac_sanctioned":            1.0,
+    "ransomware":                 0.9,
+    "theft_hack":                 0.9,
+    "darknet":                    0.8,
+    "blacklist":                  0.8,   # USDT 黑名单（未分类）
+    "mixer":                      0.7,
+    "opaque_bridge":              0.6,
+    "high_risk_exchange":         0.4,
+    "transparent_bridge_with_bl": 0.3,
+    "transparent_bridge":         0.1,
 }
 
-# 派生查找表（供内部使用）
-ALL_BRIDGE_ADDRS: Set[str] = set(BRIDGE_REGISTRY)
-OPAQUE_BRIDGE_ADDRS: Set[str] = {a for a, v in BRIDGE_REGISTRY.items() if not v["traceable"]}
+# Hop 距离衰减（直接交互 1.0，二跳 0.3）
+HOP_DECAY: Dict[int, float] = {1: 1.0, 2: 0.3}
 
-# ==================== 多链扫描器配置（用于跨链追踪）====================
-# 无 API key 的链会走公开端点（有速率限制），可自行填入各链 key
+# BRIDGE_REGISTRY / ALL_BRIDGE_ADDRS / OPAQUE_BRIDGE_ADDRS 从 threat_intel 导入
+
+# ==================== 链注册表 ====================
+# 新增链：只需在此处加一条记录，其余业务代码无需修改。
+# api_key 留空则走无 key 公开端点（速率更严格）。
+# backup_url: 无 key 备用端点（Blockscout 系，无 OFAC 屏蔽）。
+# usdt_contract: 该链上 USDT 的合约地址（用于过滤 tokentx）。
+# native_token: 原生代币符号（展示用）。
+
+@dataclass
+class ChainConfig:
+    name: str
+    api_url: str
+    api_key: str
+    usdt_contract: str
+    native_token: str
+    backup_url: str = ""
+    explorer_url: str = ""
+
+EVM_CHAIN_REGISTRY: Dict[str, ChainConfig] = {
+    "ethereum": ChainConfig(
+        name="Ethereum", native_token="ETH",
+        api_url="https://api.etherscan.io/api",
+        api_key=os.getenv("ETHERSCAN_API_KEY", ""),
+        backup_url="https://eth.blockscout.com/api",
+        usdt_contract="0xdac17f958d2ee523a2206206994597c13d831ec7",
+        explorer_url="https://etherscan.io",
+    ),
+    "bsc": ChainConfig(
+        name="BSC", native_token="BNB",
+        api_url="https://api.bscscan.com/api",
+        api_key=os.getenv("BSCSCAN_API_KEY", ""),
+        backup_url="https://bsc.blockscout.com/api",
+        usdt_contract="0x55d398326f99059ff775485246999027b3197955",
+        explorer_url="https://bscscan.com",
+    ),
+    "polygon": ChainConfig(
+        name="Polygon", native_token="MATIC",
+        api_url="https://api.polygonscan.com/api",
+        api_key=os.getenv("POLYGONSCAN_API_KEY", ""),
+        backup_url="https://polygon.blockscout.com/api",
+        usdt_contract="0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+        explorer_url="https://polygonscan.com",
+    ),
+    "arbitrum": ChainConfig(
+        name="Arbitrum", native_token="ETH",
+        api_url="https://api.arbiscan.io/api",
+        api_key=os.getenv("ARBISCAN_API_KEY", ""),
+        backup_url="https://arbitrum.blockscout.com/api",
+        usdt_contract="0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+        explorer_url="https://arbiscan.io",
+    ),
+    "optimism": ChainConfig(
+        name="Optimism", native_token="ETH",
+        api_url="https://api-optimistic.etherscan.io/api",
+        api_key=os.getenv("OPTIMISM_API_KEY", ""),
+        backup_url="https://optimism.blockscout.com/api",
+        usdt_contract="0x94b008aa00579c1307b0ef2c499ad98a8ce58e58",
+        explorer_url="https://optimistic.etherscan.io",
+    ),
+    "avalanche": ChainConfig(
+        name="Avalanche", native_token="AVAX",
+        api_url="https://api.snowtrace.io/api",
+        api_key=os.getenv("SNOWTRACE_API_KEY", ""),
+        backup_url="https://avalanche.blockscout.com/api",
+        usdt_contract="0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7",
+        explorer_url="https://snowtrace.io",
+    ),
+    "base": ChainConfig(
+        name="Base", native_token="ETH",
+        api_url="https://api.basescan.org/api",
+        api_key=os.getenv("BASESCAN_API_KEY", ""),
+        backup_url="https://base.blockscout.com/api",
+        usdt_contract="0xfde4c96c8593536e31f229ea8f37b2ada2699bb2",
+        explorer_url="https://basescan.org",
+    ),
+}
+
+# 跨链追踪时查询目标链用（供 BridgeTracer 使用）
 CHAIN_SCANNERS: Dict[str, Dict] = {
-    "ethereum":  {"api": "https://api.etherscan.io/api",             "key": ETHERSCAN_API_KEY},
-    "arbitrum":  {"api": "https://api.arbiscan.io/api",              "key": ""},
-    "optimism":  {"api": "https://api-optimistic.etherscan.io/api",  "key": ""},
-    "polygon":   {"api": "https://api.polygonscan.com/api",          "key": ""},
-    "bsc":       {"api": "https://api.bscscan.com/api",              "key": ""},
-    "avalanche": {"api": "https://api.snowtrace.io/api",             "key": ""},
-    "base":      {"api": "https://api.basescan.org/api",             "key": ""},
+    name: {"api": cfg.api_url, "key": cfg.api_key}
+    for name, cfg in EVM_CHAIN_REGISTRY.items()
 }
 
 # LayerZero 链 ID → 链名称（v1 + v2 endpoint IDs）
@@ -206,32 +148,10 @@ LZ_CHAIN_MAP: Dict[int, str] = {
     30109: "polygon",  30102: "bsc",      30106: "avalanche", 30184: "base",
 }
 
-BRIDGE_TRACE_ENABLED = True   # 是否对透明桥进行对端地址追踪（可用 --no-trace 关闭）
+BRIDGE_TRACE_ENABLED = True
 
-# ==================== 混币器合约 ====================
-MIXER_CONTRACTS = {
-    "0x47ce0c6ed5b0ce3d3a51fdb1c52dc66a7c3c2936": "Tornado Cash 0.1ETH",
-    "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf": "Tornado Cash 1ETH",
-    "0xa160cdab225685da1d56aa342ad8841c3b53f291": "Tornado Cash 10ETH",
-    "0xd4b88df4d29f5cedd6857912842cff3b20c8cfa3": "Tornado Cash 100ETH",
-    "0xfd8610d20aa15b7b2e3be39b396a1bc3516c7144": "Tornado Cash 1000ETH",
-    "0x07687e702b410fa43f4cb4af7fa097918ffd2730": "Tornado Cash USDC",
-    "0x23773e65ed146a459667fd7b0fc7ebcddbebf32": "Tornado Cash DAI",
-    "0x12d66f87a04a9e220c9d50f0a8c1f856591900aa": "Tornado Cash USDC 100",
-    "0x47ce0c6ed5b0ce3d3a51fdb1c52dc66a7c3c2936": "Tornado Cash",
-    "0xd691f27f38b395b1b196747234ba8e57c9162cf5": "eXch (混币交易所)",
-}
-
-# ==================== 高风险交易所（KYC不完善）====================
-HIGH_RISK_EXCHANGES = {
-    "0x6262998ced04146fa42253a5c0af90ca02dfd2a3": "Crypto.com Deposit",
-    "0xd24400ae8bfebb18ca49be86258a3c749cf46853": "Gemini",
-    "0xec031efe9930b50d70e82f43c94b0abdd59dcab5": "Bitfinex Hot",
-    "0x876eabf441b2ee5b5b0554fd502a8e0600950cfa": "Bitfinex",
-    # 以下为已知高风险或受限交易所
-    "0x5e4e65926ba27467555eb562121fac00d24e9dd2": "Garantex",
-    "0x45fdb1b92a649fb6a64ef1511d3ba5bf60044838": "Garantex v2",
-}
+# 混币器、桥、交易所数据从 threat_intel/ 目录加载（见该目录的 JSON 文件）
+# 需要新增地址时，直接编辑对应的 JSON 文件，无需改动本文件。
 
 # ==================== 已知 DEX Router（排除用，非风险信号）====================
 KNOWN_DEX_ADDRS: Set[str] = {
@@ -248,9 +168,7 @@ KNOWN_DEX_ADDRS: Set[str] = {
 
 # ==================== Tron 已知跨链桥合约 ====================
 TRON_BRIDGE_CONTRACTS_HEX = {
-    # Multichain Tron 端（近似地址）
     "0x1df721d242e0783f8fcad4592a068bc6a50c4bce": "Multichain Tron",
-    # TronLink官方跨链
     "0x0000000000000000000000000000000000000000": "Placeholder",
 }
 
@@ -304,81 +222,150 @@ def load_blacklist(csv_path: str) -> Dict[str, Dict]:
 
 # ==================== 链类型判断 ====================
 def detect_chain(address: str, blacklist: Dict[str, Dict]) -> str:
-    """
-    根据黑名单记录或地址特征判断链类型
-    优先查黑名单，其次用地址格式（0x 开头 = eth 为主）
-    """
     addr_norm = normalize(address)
     if addr_norm in blacklist:
         return blacklist[addr_norm]["chain"]
-    # 启发式：所有 0x 地址当做 ethereum，但用户可通过 --chain 参数覆盖
     return "ethereum"
 
 
-# ==================== Etherscan / Blockscout 查询 ====================
-# Etherscan 对 OFAC 制裁地址有合规屏蔽，Blockscout 是开源替代，无此限制
-# 策略：优先用 Etherscan，若返回空结果则自动切换 Blockscout 重试
+# ==================== 通用 EVM 链查询客户端 ====================
+# 兼容 Etherscan API 格式（BscScan / PolygonScan / Arbiscan 等使用相同接口）
+# 策略：优先用主端点（付费 key），若无结果自动切换 Blockscout 备用端点
 
-class EtherscanClient:
-    ETHERSCAN_BASE  = "https://api.etherscan.io/api"
-    BLOCKSCOUT_BASE = "https://eth.blockscout.com/api"   # 兼容 Etherscan API 格式
+class EVMClient:
+    """通用 EVM 链查询客户端，接受 ChainConfig 配置。"""
 
-    def __init__(self, api_key: str):
-        self.key = api_key
+    def __init__(self, cfg: ChainConfig):
+        self.cfg = cfg
+        self.primary_url = cfg.api_url
+        self.backup_url = cfg.backup_url or ""
+        self.key = cfg.api_key
+        # 保持旧属性名兼容（_get_usdt_logs 等内部方法使用）
+        self.ETHERSCAN_BASE  = cfg.api_url
+        self.BLOCKSCOUT_BASE = cfg.backup_url or ""
 
     def _get(self, params: dict, base: str = None) -> Optional[dict]:
-        url = base or self.ETHERSCAN_BASE
+        url = base or self.primary_url
         p = dict(params)
-        if url == self.ETHERSCAN_BASE:
+        # 只在主端点加 apikey（Blockscout 公开端点不需要）
+        if self.key and url == self.primary_url:
             p["apikey"] = self.key
         try:
             r = requests.get(url, params=p, timeout=15)
             data = r.json()
             return data
         except Exception as e:
-            print(f"  [WARN] 请求失败 ({url[:30]}...): {e}", file=sys.stderr)
+            print(f"  [WARN] 请求失败 ({url[:50]}): {e}", file=sys.stderr)
             return None
 
-    def _fetch_txs(self, params: dict) -> List[dict]:
-        """先查 Etherscan，若无结果自动切换 Blockscout"""
-        for base in [self.ETHERSCAN_BASE, self.BLOCKSCOUT_BASE]:
+    def _fetch_one_page(self, params: dict) -> List[dict]:
+        """查一页，主端点失败时尝试备用端点。"""
+        urls = [u for u in [self.primary_url, self.backup_url] if u]
+        for base in urls:
             data = self._get(params, base=base)
             result = data.get("result", []) if data else []
             if isinstance(result, list) and len(result) > 0:
-                if base == self.BLOCKSCOUT_BASE:
-                    print(f"  [INFO] Etherscan 无结果，已从 Blockscout 获取数据")
+                if base == self.backup_url:
+                    print(f"  [INFO] {self.cfg.name} 主端点无结果，已从备用端点获取数据")
                 return result
             time.sleep(REQUEST_DELAY)
         return []
 
-    def get_normal_txs(self, address: str, limit: int = MAX_TX_FETCH) -> List[dict]:
-        return self._fetch_txs({
+    def _fetch_txs_paged(self, base_params: dict,
+                         page_size: int = MAX_TX_FETCH,
+                         max_pages: int = 10,
+                         time_cutoff: int = 0) -> Tuple[List[dict], bool]:
+        """
+        分页拉取交易，返回 (结果列表, 是否被截断)。
+
+        早停条件（满足任一即停止翻页）：
+          1. 当前页返回条数 < page_size → 已到末尾
+          2. 当前页最后一条时间戳 < time_cutoff → 已超出时间窗口
+          3. 已拉取 max_pages 页 → 主动截断，防止无限翻页
+
+        page_size: 每页条数（Etherscan 最大 10000，建议 500-1000）
+        max_pages: 最多拉取的页数
+        time_cutoff: Unix 时间戳，早于此时间的记录不需要（0=不限制）
+        """
+        all_results: List[dict] = []
+        truncated = False
+
+        for page_num in range(1, max_pages + 1):
+            params = dict(base_params)
+            params["page"] = page_num
+            params["offset"] = page_size
+            time.sleep(REQUEST_DELAY)
+            page = self._fetch_one_page(params)
+
+            if not page:
+                break  # 无数据，到头了
+
+            all_results.extend(page)
+
+            # 早停：时间窗口
+            if time_cutoff > 0:
+                oldest_ts = int(page[-1].get("timeStamp", 0))
+                if oldest_ts < time_cutoff:
+                    break  # 这页里最老的记录已超出窗口，后面的更老，不用拿了
+
+            # 早停：未满页 = 没有下一页
+            if len(page) < page_size:
+                break
+
+            # 已拉满 max_pages → 截断
+            if page_num == max_pages:
+                truncated = True
+                print(f"  [INFO] {self.cfg.name} 已拉取 {max_pages} 页（{len(all_results)} 条），主动截断")
+
+        return all_results, truncated
+
+    def get_normal_txs(self, address: str,
+                       limit: int = MAX_TX_FETCH,
+                       max_pages: int = 1,
+                       time_cutoff: int = 0) -> List[dict]:
+        base = {
             "module": "account", "action": "txlist",
             "address": address, "startblock": 0, "endblock": 99999999,
-            "sort": "desc", "offset": limit, "page": 1,
-        })
+            "sort": "desc",
+        }
+        results, _ = self._fetch_txs_paged(base, page_size=limit,
+                                            max_pages=max_pages, time_cutoff=time_cutoff)
+        return results
 
-    def get_token_transfers(self, address: str, limit: int = MAX_TX_FETCH) -> List[dict]:
-        return self._fetch_txs({
+    def get_token_transfers(self, address: str,
+                            limit: int = MAX_TX_FETCH,
+                            max_pages: int = 1,
+                            time_cutoff: int = 0) -> List[dict]:
+        base = {
             "module": "account", "action": "tokentx",
             "address": address, "startblock": 0, "endblock": 99999999,
-            "sort": "desc", "offset": limit, "page": 1,
-        })
+            "sort": "desc",
+        }
+        results, _ = self._fetch_txs_paged(base, page_size=limit,
+                                            max_pages=max_pages, time_cutoff=time_cutoff)
+        return results
 
     def get_account_info(self, address: str) -> dict:
-        # 余额：Blockscout 优先（无制裁屏蔽）
-        balance_data = self._get({"module": "account", "action": "balance", "address": address, "tag": "latest"})
+        balance_data = self._get({"module": "account", "action": "balance",
+                                  "address": address, "tag": "latest"})
         if not balance_data or not isinstance(balance_data.get("result"), str):
-            balance_data = self._get({"module": "account", "action": "balance", "address": address, "tag": "latest"}, base=self.BLOCKSCOUT_BASE)
+            if self.backup_url:
+                balance_data = self._get({"module": "account", "action": "balance",
+                                          "address": address, "tag": "latest"},
+                                         base=self.backup_url)
         contract_data = self._get({"module": "contract", "action": "getabi", "address": address})
-        is_contract = contract_data and contract_data.get("status") == "1"
-        balance_eth = "0"
+        is_contract = bool(contract_data and contract_data.get("status") == "1")
+        balance_str = f"0.000000 {self.cfg.native_token}"
         if balance_data and isinstance(balance_data.get("result"), str):
             try:
-                balance_eth = f"{int(balance_data['result']) / 1e18:.6f} ETH"
+                balance_str = f"{int(balance_data['result']) / 1e18:.6f} {self.cfg.native_token}"
             except Exception:
                 pass
-        return {"balance": balance_eth, "is_contract": is_contract}
+        return {"balance": balance_str, "is_contract": is_contract}
+
+
+# 向后兼容别名
+EtherscanClient = EVMClient
 
 
 # ==================== TronScan 查询 ====================
@@ -417,20 +404,11 @@ class TronScanClient:
 
 # ==================== 跨链桥对端地址追踪器 ====================
 class BridgeTracer:
-    """
-    透明桥追踪器：给定一笔桥交易，找出目标链上的接收地址。
-    支持：LayerZero 系（Stargate 等）、官方 Rollup 桥（Arbitrum/Optimism/Polygon）
-    """
-
     def resolve(self, tx_hash: str, method: str, src_address: str,
                 dst_chains_hint: list) -> Optional[Dict]:
-        """
-        返回: {"dst_chain": str, "dst_address": str, "dst_tx": str} 或 None
-        """
         if method == "layerzero_api":
             return self._resolve_layerzero(tx_hash, src_address)
         elif method == "event_logs_rollup" and dst_chains_hint:
-            # 官方 Rollup 桥：目标地址 = 来源地址（同一地址跨 L2）
             return {
                 "dst_chain": dst_chains_hint[0],
                 "dst_address": src_address,
@@ -439,21 +417,15 @@ class BridgeTracer:
         return None
 
     def _resolve_layerzero(self, tx_hash: str, src_address: str) -> Optional[Dict]:
-        """调用 LayerZero Scan API 获取目标链 tx，再找 token 转账接收方"""
         try:
-            r = requests.get(
-                f"https://api.layerzeroscan.com/tx/{tx_hash}", timeout=10
-            )
+            r = requests.get(f"https://api.layerzeroscan.com/tx/{tx_hash}", timeout=10)
             if r.status_code != 200:
                 return None
             data = r.json()
-            # LZ Scan v2 响应格式：data.messages[] 或 data.data[]
             messages = data.get("messages") or data.get("data") or []
             if not messages:
                 return None
             msg = messages[0]
-
-            # 提取目标链 ID（兼容 v1/v2 不同字段名）
             dst_chain_id = (
                 msg.get("dstChainId")
                 or msg.get("pathway", {}).get("dstEid")
@@ -467,17 +439,13 @@ class BridgeTracer:
             dst_chain = LZ_CHAIN_MAP.get(int(dst_chain_id)) if dst_chain_id else None
             if not dst_chain:
                 return None
-
-            # 在目标链上找 token 转账的实际接收地址
             dst_address = self._find_token_receiver(dst_tx, dst_chain) or src_address
             return {"dst_chain": dst_chain, "dst_address": dst_address, "dst_tx": dst_tx}
-
         except Exception as e:
             print(f"  [WARN] LZ Scan 查询失败: {e}", file=sys.stderr)
             return None
 
     def _find_token_receiver(self, tx_hash: str, chain: str) -> Optional[str]:
-        """在目标链上查该 tx 的 token 转账接收方（第一笔 ERC20 Transfer 的 to）"""
         if not tx_hash:
             return None
         cfg = CHAIN_SCANNERS.get(chain, {})
@@ -500,197 +468,153 @@ class BridgeTracer:
 
 
 # ==================== 数据类 ====================
+
+@dataclass
+class RiskIndicator:
+    """
+    单条风险证据——评分的最小单元。
+    每条 indicator 对应一个可审计的链上事实：
+    具体是哪笔交易、涉及多少 USDT、来自哪类风险实体、发生在哪条链上。
+    """
+    indicator_type: str      # blacklist_received / blacklist_sent / mixer / opaque_bridge / ...
+    category: str
+    category_weight: float
+    counterparty: str
+    direction: str           # IN / OUT
+    amount_usdt: float
+    hop: int                 # 1 = 1-hop 直接交互，2 = 2-hop 间接关联
+    hop_decay: float
+    tx_hashes: List[str]
+    timestamps: List[str]
+    chain: str = ""          # 发生在哪条链（ethereum / bsc / polygon / ...）
+    via_address: str = ""    # 2-hop 时的中间节点地址
+    note: str = ""
+
+
 @dataclass
 class RiskReport:
     address: str
-    chain: str
-    tron_address: str = ""          # Tron base58 格式（如果是 tron 链）
+    chain: str               # 主链（或 "multi-evm"）
+    tron_address: str = ""
     is_blacklisted: bool = False
     blacklist_time: str = ""
 
-    risk_score: int = 0             # 0-100
-    risk_level: str = "LOW"         # LOW / MEDIUM / HIGH / CRITICAL
+    # 评分结果
+    risk_score: int = 0
+    risk_level: str = "LOW"
+    taint_ratio: float = 0.0
+    received_exposure: float = 0.0
+    sent_exposure: float = 0.0
 
+    # 基础统计（跨链合计）
     account_info: dict = field(default_factory=dict)
+    total_inflow_usdt: float = 0.0
+    total_outflow_usdt: float = 0.0
     total_counterparties: int = 0
     total_transactions: int = 0
 
-    hop1_blacklisted: List[dict] = field(default_factory=list)  # 1跳黑名单
-    hop2_blacklisted: List[dict] = field(default_factory=list)  # 2跳黑名单
-    top_counterparties: List[dict] = field(default_factory=list) # 频率最高的普通对手方（用于图展开）
-    bridge_interactions: List[dict] = field(default_factory=list)        # 透明跨链桥（可追踪）
-    opaque_bridge_interactions: List[dict] = field(default_factory=list) # 不透明桥（资金流向不可追踪）
-    mixer_interactions: List[dict] = field(default_factory=list)         # 混币器
-    high_risk_exchanges: List[dict] = field(default_factory=list)        # 高风险交易所
-    cross_chain_findings: List[dict] = field(default_factory=list)       # 跨链追踪发现
+    # 多链明细
+    chains_analyzed: List[str] = field(default_factory=list)
+    per_chain_inflow: Dict[str, float] = field(default_factory=dict)
+    per_chain_outflow: Dict[str, float] = field(default_factory=dict)
+
+    # 风险证据列表（评分的完整依据）
+    indicators: List[RiskIndicator] = field(default_factory=list)
+
+    # 展示用原始记录（不参与评分）
+    top_counterparties: List[dict] = field(default_factory=list)
+    bridge_interactions: List[dict] = field(default_factory=list)
+    opaque_bridge_interactions: List[dict] = field(default_factory=list)
+    mixer_interactions: List[dict] = field(default_factory=list)
+    high_risk_exchanges: List[dict] = field(default_factory=list)
+    cross_chain_findings: List[dict] = field(default_factory=list)
 
     warnings: List[str] = field(default_factory=list)
-    risk_factors: List[str] = field(default_factory=list)
-
-
-# ==================== ML 风险评分器（可选）====================
-class MLRiskScorer:
-    """
-    加载训练好的 ML 模型，对地址做风险概率预测。
-    如果模型文件不存在，graceful 降级为 None（系统回退到纯规则引擎）。
-    """
-
-    def __init__(self, model_dir: str = None):
-        self.model = None
-        self.meta = None
-        if model_dir is None:
-            model_dir = os.path.join(os.path.dirname(__file__), "ml", "data", "model_output")
-        model_path = os.path.join(model_dir, "best_model.pkl")
-        meta_path = os.path.join(model_dir, "model_meta.json")
-        if os.path.exists(model_path) and os.path.exists(meta_path):
-            try:
-                import pickle
-                with open(model_path, "rb") as f:
-                    self.model = pickle.load(f)
-                with open(meta_path) as f:
-                    self.meta = json.load(f)
-                print(f"  [ML] 已加载模型: {self.meta.get('model_name', '?')} "
-                      f"(F1={self.meta.get('macro_f1', 0):.3f})")
-            except Exception as e:
-                print(f"  [ML] 模型加载失败: {e}")
-                self.model = None
-
-    @property
-    def available(self) -> bool:
-        return self.model is not None and self.meta is not None
-
-    def predict_risk(self, report: 'RiskReport') -> Optional[int]:
-        """
-        从 RiskReport 提取特征子集 → 模型预测 → 返回 0-100 风险分。
-        只用 report 中已有的信息，不额外调 API。
-        """
-        if not self.available:
-            return None
-        try:
-            features = self._extract_features_from_report(report)
-            feature_names = self.meta["feature_names"]
-            X = []
-            for fname in feature_names:
-                X.append(features.get(fname, 0))
-            import numpy as np
-            X_arr = np.array([X], dtype=np.float64)
-            X_arr = np.nan_to_num(X_arr, nan=0.0, posinf=999.0, neginf=-999.0)
-            proba = self.model.predict_proba(X_arr)[0]
-            # label 编码：meta 中 label_encoding 记录了 {label: index}
-            label_enc = self.meta.get("label_encoding", {})
-            bl_idx = label_enc.get("blocklisted", 0)
-            risk_proba = proba[bl_idx] if bl_idx < len(proba) else proba[0]
-            return int(risk_proba * 100)
-        except Exception as e:
-            print(f"  [ML] 预测失败: {e}")
-            return None
-
-    def _extract_features_from_report(self, report: 'RiskReport') -> dict:
-        """从 RiskReport 中提取 ML 模型需要的特征（尽量覆盖）"""
-        f = {}
-        # Interaction features
-        mixer_in = sum(1 for m in report.mixer_interactions if m.get("direction") == "IN")
-        mixer_out = sum(1 for m in report.mixer_interactions if m.get("direction") != "IN")
-        f["sent_to_mixer"] = mixer_out
-        f["received_from_mixer"] = mixer_in
-        f["has_mixer_interaction"] = int(len(report.mixer_interactions) > 0)
-
-        opaque_in = sum(1 for b in report.opaque_bridge_interactions if b.get("direction") == "IN")
-        opaque_out = sum(1 for b in report.opaque_bridge_interactions if b.get("direction") != "IN")
-        f["sent_to_opaque_bridge"] = opaque_out
-        f["received_from_opaque_bridge"] = opaque_in
-
-        trans_in = sum(1 for b in report.bridge_interactions if b.get("direction") == "IN")
-        trans_out = sum(1 for b in report.bridge_interactions if b.get("direction") != "IN")
-        f["sent_to_transparent_bridge"] = trans_out
-        f["received_from_transparent_bridge"] = trans_in
-        f["has_bridge_interaction"] = int(len(report.bridge_interactions) + len(report.opaque_bridge_interactions) > 0)
-
-        f["sent_to_flagged"] = len(report.hop1_blacklisted)
-        f["received_from_flagged"] = 0  # 无法从 report 精确区分方向
-        f["has_flagged_interaction"] = int(len(report.hop1_blacklisted) > 0)
-
-        hrx_count = len(report.high_risk_exchanges)
-        f["sent_to_high_risk_exchange"] = hrx_count
-        f["received_from_high_risk_exchange"] = 0
-
-        f["sent_to_cex"] = 0
-        f["received_from_cex"] = 0
-        f["has_cex_interaction"] = 0
-        f["sent_to_dex"] = 0
-        f["received_from_dex"] = 0
-
-        # Transfer features
-        f["total_count"] = report.total_transactions
-        f["sent_count"] = 0
-        f["received_count"] = 0
-        f["total_sent_amount"] = 0
-        f["total_received_amount"] = 0
-        f["transfers_over_1k"] = 0
-        f["transfers_over_5k"] = 0
-        f["transfers_over_10k"] = 0
-        f["transfers_over_50k"] = 0
-        f["transfers_over_100k"] = 0
-        f["in_out_ratio"] = 0
-        f["drain_ratio"] = 0
-        f["avg_amount"] = 0
-        f["max_amount"] = 0
-        f["min_amount"] = 0
-        f["median_amount"] = 0
-        f["std_amount"] = 0
-        f["repeated_same_amount_groups"] = 0
-        f["repeated_amount_ratio"] = 0
-
-        # Network features
-        f["unique_senders"] = 0
-        f["unique_receivers"] = 0
-        f["is_single_source"] = 0
-        f["is_single_dest"] = 0
-        f["in_degree"] = 0
-        f["out_degree"] = len(report.top_counterparties)
-        f["in_out_degree_ratio"] = 0
-        f["total_unique_counterparties"] = report.total_counterparties
-        f["counterparty_flagged_ratio"] = (
-            len(report.hop1_blacklisted) / max(report.total_counterparties, 1)
-        )
-        f["counterparty_mixer_ratio"] = 0
-        f["counterparty_bridge_ratio"] = 0
-        f["counterparty_cex_ratio"] = 0
-        f["has_proxy_behavior"] = 0
-
-        # Temporal features
-        f["account_age_days"] = 0
-        f["prolonged_activity"] = 0
-        f["avg_interval_seconds"] = 0
-        f["min_interval_seconds"] = 0
-        f["std_interval_seconds"] = 0
-        f["has_high_frequency"] = 0
-        f["rapid_tx_ratio"] = 0
-        f["max_daily_count"] = 0
-        f["has_daily_burst"] = 0
-        f["has_rapid_reciprocal"] = 0
-        f["hour_concentration"] = 0
-
-        return f
 
 
 # ==================== 核心分析引擎 ====================
 class AMLAnalyzer:
-    def __init__(self, blacklist: Dict[str, Dict], etherscan: EtherscanClient,
-                 tronscan: TronScanClient, tracer: BridgeTracer = None,
+    def __init__(self, blacklist: Dict[str, Dict],
+                 evm_clients: Dict[str, EVMClient],
+                 tronscan: TronScanClient,
+                 tracer: BridgeTracer = None,
                  time_window_days: int = 0):
         self.blacklist = blacklist
-        self.eth = etherscan
+        self.evm_clients = evm_clients   # {chain_name: EVMClient}
         self.tron = tronscan
         self.tracer = tracer or BridgeTracer()
-        # time_window_days=0 表示不限制时间；>0 则只分析最近 N 天的交易
         self.time_window_days = time_window_days
-        # ML 风险评分器（可选，模型文件不存在时自动降级为纯规则）
-        self.ml_scorer = MLRiskScorer()
+
+    # ---------- USDT 余额一致性校验 ----------
+    def _check_balance_consistency(self, address: str, token_txs: List[dict],
+                                   client: EVMClient, chain_cfg: ChainConfig) -> dict:
+        """
+        查链上实际 USDT 余额，与历史转账记录的收支差对比。
+        差异过大说明存在未追踪的资金流动。
+        仅在 MAX_TX_FETCH 未截断时结果可信。
+        """
+        addr_norm = normalize(address)
+        balance_data = client._get({
+            "module": "account", "action": "tokenbalance",
+            "contractaddress": chain_cfg.usdt_contract,
+            "address": address,
+            "tag": "latest",
+        })
+        actual_balance = 0.0
+        if balance_data and isinstance(balance_data.get("result"), str):
+            try:
+                actual_balance = int(balance_data["result"]) / 1e6
+            except Exception:
+                pass
+
+        total_in = 0.0
+        total_out = 0.0
+        tx_count = 0
+        for tx in token_txs:
+            symbol = tx.get("tokenSymbol", "")
+            if "USDT" not in symbol.upper():
+                continue
+            f = normalize(tx.get("from", ""))
+            t = normalize(tx.get("to", "") or "")
+            try:
+                decimals = int(tx.get("tokenDecimal", "6") or "6")
+                val = int(tx.get("value", "0") or "0") / (10 ** decimals)
+            except Exception:
+                val = 0.0
+            if t == addr_norm:
+                total_in += val
+            elif f == addr_norm:
+                total_out += val
+            tx_count += 1
+
+        expected = total_in - total_out
+        discrepancy = actual_balance - expected
+        discrepancy_pct = abs(discrepancy) / max(total_in, 1.0) * 100
+        is_fast_transit = (
+            total_in > 10_000
+            and actual_balance < total_in * 0.05
+            and total_out > total_in * 0.9
+        )
+        is_unexplained_gap = (
+            abs(discrepancy) > 5_000
+            and discrepancy_pct > 20
+            and tx_count >= 5
+        )
+        return {
+            "actual_usdt_balance": round(actual_balance, 2),
+            "total_in": round(total_in, 2),
+            "total_out": round(total_out, 2),
+            "expected_balance": round(expected, 2),
+            "discrepancy": round(discrepancy, 2),
+            "discrepancy_pct": round(discrepancy_pct, 1),
+            "is_fast_transit": is_fast_transit,
+            "is_unexplained_gap": is_unexplained_gap,
+            "tx_count_used": tx_count,
+            "truncated": len(token_txs) >= MAX_TX_FETCH,
+        }
 
     # ---------- 目标链 1 跳黑名单检测 ----------
     def _check_dst_hop1(self, address: str, chain: str) -> List[dict]:
-        """在目标链上查询 address 的 1 跳黑名单关联（用于跨链追踪）"""
         cfg = CHAIN_SCANNERS.get(chain, {})
         api = cfg.get("api")
         key = cfg.get("key", "")
@@ -714,11 +638,18 @@ class AMLAnalyzer:
                 for tx in txs:
                     f = normalize(tx.get("from", ""))
                     t = normalize(tx.get("to", "") or "")
-                    other = t if f == addr_norm else f
+                    if f == addr_norm:
+                        other = t
+                        direction = "OUT"
+                    elif t == addr_norm:
+                        other = f
+                        direction = "IN"
+                    else:
+                        continue
                     if other and other != addr_norm and other in self.blacklist:
                         info = self.blacklist[other]
                         entry = {"address": other, "chain": info["chain"],
-                                 "blacklist_time": info["time"]}
+                                 "blacklist_time": info["time"], "direction": direction}
                         if entry not in hits:
                             hits.append(entry)
         except Exception as e:
@@ -726,32 +657,28 @@ class AMLAnalyzer:
         return hits[:5]
 
     # ---------- USDT getLogs 查询（捕获 transferFrom 类型转账）----------
-    def _get_usdt_logs(self, address: str) -> List[dict]:
-        """
-        通过 USDT Transfer 事件日志查找地址的收/发记录。
-        即使地址从未主动发送交易（transferFrom 场景），也能找到关联。
-        """
-        USDT = "0xdac17f958d2ee523a2206206994597c13d831ec7"
+    def _get_usdt_logs(self, address: str, client: EVMClient,
+                       chain_cfg: ChainConfig) -> List[dict]:
         TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
         addr_norm = normalize(address)
-        # 地址补零到32字节（用于 topic 匹配）
         padded = "0x" + "0" * 24 + addr_norm[2:]
         results = []
+        backup = client.backup_url
 
         for role, topic_key in [("sender", "topic1"), ("receiver", "topic2")]:
             time.sleep(REQUEST_DELAY)
             params = {
                 "module": "logs", "action": "getLogs",
-                "address": USDT,
+                "address": chain_cfg.usdt_contract,
                 "topic0": TRANSFER_TOPIC,
                 topic_key: padded,
                 "topic0_1_opr" if role == "sender" else "topic0_2_opr": "and",
                 "fromBlock": 0, "toBlock": 99999999,
                 "page": 1, "offset": MAX_TX_FETCH,
             }
-            # 优先 Blockscout（无制裁屏蔽）
             try:
-                r = requests.get(self.eth.BLOCKSCOUT_BASE, params=params, timeout=15)
+                base = backup if backup else client.primary_url
+                r = requests.get(base, params=params, timeout=15)
                 logs = r.json().get("result", [])
                 if isinstance(logs, list):
                     for log in logs:
@@ -762,115 +689,181 @@ class AMLAnalyzer:
 
         return results
 
-    # ---------- 以太坊分析 ----------
-    def _analyze_ethereum(self, address: str, report: RiskReport, depth: int = 1):
+    # ---------- 单条 EVM 链分析（1-hop + 2-hop）----------
+    def _analyze_evm_chain(self, address: str, report: RiskReport,
+                           chain_cfg: ChainConfig, client: EVMClient,
+                           chain_name: str):
         addr_norm = normalize(address)
-        print(f"  [ETH] 查询交易记录...")
-        time.sleep(REQUEST_DELAY)
-        normal_txs = self.eth.get_normal_txs(address)
-        time.sleep(REQUEST_DELAY)
-        token_txs = self.eth.get_token_transfers(address)
-        # 截断提示：如果返回数量恰好等于上限，说明可能还有更多历史交易
-        if len(normal_txs) >= MAX_TX_FETCH:
-            print(f"  [WARN] 普通交易达到上限 {MAX_TX_FETCH}，可能遗漏更早的记录")
-        if len(token_txs) >= MAX_TX_FETCH:
-            print(f"  [WARN] Token转账达到上限 {MAX_TX_FETCH}，可能遗漏更早的记录")
+        chain_label = chain_cfg.name
 
-        # 若 txlist/tokentx 无结果，补充查 USDT 事件日志（处理 transferFrom 场景）
+        # 时间窗口截止时间（0 = 不限制）
+        time_cutoff = 0
+        if self.time_window_days > 0:
+            time_cutoff = int(time.time()) - self.time_window_days * 86400
+
+        print(f"  [{chain_label}] 查询交易记录（最多 {MAX_PAGES} 页 × {PAGE_SIZE} 条）...")
+        normal_txs = client.get_normal_txs(address, limit=PAGE_SIZE,
+                                           max_pages=MAX_PAGES, time_cutoff=time_cutoff)
+        token_txs  = client.get_token_transfers(address, limit=PAGE_SIZE,
+                                                max_pages=MAX_PAGES, time_cutoff=time_cutoff)
+
+        if len(normal_txs) >= PAGE_SIZE * MAX_PAGES:
+            report.warnings.append(
+                f"[{chain_label}] 普通交易达到上限 {PAGE_SIZE*MAX_PAGES} 条，历史可能不完整（可增大 MAX_PAGES）"
+            )
+        if len(token_txs) >= PAGE_SIZE * MAX_PAGES:
+            report.warnings.append(
+                f"[{chain_label}] Token转账达到上限 {PAGE_SIZE*MAX_PAGES} 条，历史可能不完整"
+            )
+
         usdt_logs = []
         if len(normal_txs) == 0 and len(token_txs) == 0:
-            print(f"  [ETH] txlist/tokentx 无结果，尝试 USDT getLogs...")
-            usdt_logs = self._get_usdt_logs(address)
+            print(f"  [{chain_label}] txlist/tokentx 无结果，尝试 USDT getLogs...")
+            usdt_logs = self._get_usdt_logs(address, client, chain_cfg)
             if usdt_logs:
-                print(f"  [ETH] getLogs 获取到 {len(usdt_logs)} 条 USDT Transfer 事件")
+                print(f"  [{chain_label}] getLogs 获取到 {len(usdt_logs)} 条 USDT Transfer 事件")
 
-        time.sleep(REQUEST_DELAY)
-        report.account_info = self.eth.get_account_info(address)
+        # 仅主链记录 account_info（避免多链重复）
+        if not report.account_info:
+            time.sleep(REQUEST_DELAY)
+            report.account_info = client.get_account_info(address)
 
-        # 去重：同一笔 tx 在 txlist 和 tokentx 中可能各出现一次
-        # 用 (hash, from, to) 三元组去重，保留不同 token transfer 事件
-        _seen_tx_keys: Set[tuple] = set()
+        # 去重
+        _seen: Set[tuple] = set()
         all_txs = []
         for tx in normal_txs + token_txs:
-            _key = (tx.get("hash", ""),
-                    normalize(tx.get("from", "")),
-                    normalize(tx.get("to", "") or tx.get("contractAddress", "")))
-            if _key not in _seen_tx_keys:
-                _seen_tx_keys.add(_key)
+            k = (tx.get("hash", ""),
+                 normalize(tx.get("from", "")),
+                 normalize(tx.get("to", "") or tx.get("contractAddress", "")))
+            if k not in _seen:
+                _seen.add(k)
                 all_txs.append(tx)
 
-        # 时间窗口过滤：只保留最近 N 天的交易（防止远古交易误伤无关地址）
-        if self.time_window_days > 0:
-            cutoff_ts = int(time.time()) - self.time_window_days * 86400
-            before = len(all_txs)
-            all_txs = [tx for tx in all_txs
-                       if int(tx.get("timeStamp", 0)) >= cutoff_ts]
-            usdt_logs = [lg for lg in usdt_logs
-                         if int(lg.get("timeStamp", 0)) >= cutoff_ts]
-            if before != len(all_txs):
-                print(f"  [ETH] 时间过滤（最近{self.time_window_days}天）: "
-                      f"{before} → {len(all_txs)} 笔交易保留")
+        # 时间窗口已在分页拉取时处理（time_cutoff 早停），getLogs 结果单独过滤
+        if time_cutoff > 0 and usdt_logs:
+            before = len(usdt_logs)
+            usdt_logs = [lg for lg in usdt_logs if int(lg.get("timeStamp", 0)) >= time_cutoff]
+            if before != len(usdt_logs):
+                print(f"  [{chain_label}] getLogs 时间过滤: {before}→{len(usdt_logs)}")
 
-        report.total_transactions = len(all_txs) + len(usdt_logs)
-        print(f"  [ETH] 获取到 {len(normal_txs)} 笔普通交易 + {len(token_txs)} 笔 Token 转账"
-              + (f" + {len(usdt_logs)} 条 USDT 事件" if usdt_logs else ""))
+        report.total_transactions += len(all_txs) + len(usdt_logs)
+        print(f"  [{chain_label}] {len(normal_txs)} 普通 + {len(token_txs)} Token"
+              + (f" + {len(usdt_logs)} USDT事件" if usdt_logs else ""))
+
+        PROTOCOL_CONTRACTS = {
+            chain_cfg.usdt_contract,
+            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # USDC ETH
+            "0x0000000000000000000000000000000000000000",
+        }
 
         counterparties: Set[str] = set()
-        counterparty_stats: Dict[str, Dict] = {}  # {addr: {"count": N, "total_value": V, "max_value": M}}
+        counterparty_dir_stats: Dict[str, Dict[str, int]] = {}
+        counterparty_stats: Dict[str, Dict] = {}
 
-        # 从普通交易/token转账提取对手方（发送方主动调用的场景）
+        # 风险积累器：key = (counterparty, risk_type, via_address)
+        risky_accum: Dict[tuple, dict] = {}
+
+        def _add_risk(cp: str, risk_type: str, category: str, weight: float,
+                      direction: str, usdt_amt: float, tx_hash: str, ts: str,
+                      hop: int = 1, via: str = ""):
+            key = (cp, risk_type, via)
+            if key not in risky_accum:
+                risky_accum[key] = {
+                    "category": category, "category_weight": weight,
+                    "counterparty": cp, "in_usdt": 0.0, "out_usdt": 0.0,
+                    "tx_hashes": [], "timestamps": [], "hop": hop, "via_address": via,
+                }
+            if direction == "IN":
+                risky_accum[key]["in_usdt"] += usdt_amt
+            else:
+                risky_accum[key]["out_usdt"] += usdt_amt
+            if tx_hash and len(risky_accum[key]["tx_hashes"]) < 5:
+                risky_accum[key]["tx_hashes"].append(tx_hash)
+                risky_accum[key]["timestamps"].append(ts)
+
+        # ── 遍历所有交易 ──────────────────────────────────────────────
+        chain_inflow = 0.0
+        chain_outflow = 0.0
+
         for tx in all_txs:
-            f = normalize(tx.get("from", ""))
-            t = normalize(tx.get("to", "") or tx.get("contractAddress", ""))
-            other = t if f == addr_norm else f
-            if other and other != addr_norm:
-                counterparties.add(other)
-                # 解析金额：普通交易用 value (wei)，token 转账用 value + tokenDecimal
-                raw_val = int(tx.get("value", "0") or "0")
-                decimals = int(tx.get("tokenDecimal", "18") or "18")
-                tx_value = raw_val / (10 ** decimals) if raw_val > 0 else 0
-                if other not in counterparty_stats:
-                    counterparty_stats[other] = {"count": 0, "total_value": 0.0, "max_value": 0.0}
-                counterparty_stats[other]["count"] += 1
-                counterparty_stats[other]["total_value"] += tx_value
-                counterparty_stats[other]["max_value"] = max(counterparty_stats[other]["max_value"], tx_value)
-                # 双向检测：from 和 to 都查桥/混币器/高风险交易所
-                # 修复：旧版只查 to，导致从混币器提取资金（from=mixer）完全检测不到
-                for check_addr, direction in [(t, "OUT" if f == addr_norm else "IN"),
-                                               (f, "IN" if f != addr_norm else "OUT")]:
-                    bridge_info = BRIDGE_REGISTRY.get(check_addr)
-                    if bridge_info:
-                        entry = {
-                            "bridge": bridge_info["name"],
-                            "contract": check_addr,
-                            "tx": tx.get("hash", ""),
-                            "direction": direction,
-                            "token": tx.get("tokenSymbol", "ETH"),
-                            "value": tx.get("value", "0"),
-                            "traceable": bridge_info["traceable"],
-                            "method": bridge_info["method"],
-                            "dst_chains": bridge_info["dst_chains"],
-                        }
-                        if bridge_info["traceable"]:
-                            report.bridge_interactions.append(entry)
-                        else:
-                            report.opaque_bridge_interactions.append(entry)
-                    if check_addr in MIXER_CONTRACTS:
-                        report.mixer_interactions.append({
-                            "mixer": MIXER_CONTRACTS[check_addr],
-                            "contract": check_addr,
-                            "tx": tx.get("hash", ""),
-                            "direction": direction,
-                        })
-                    if check_addr in HIGH_RISK_EXCHANGES:
-                        report.high_risk_exchanges.append({
-                            "exchange": HIGH_RISK_EXCHANGES[check_addr],
-                            "contract": check_addr,
-                            "tx": tx.get("hash", ""),
-                            "direction": direction,
-                        })
+            frm = normalize(tx.get("from", ""))
+            to  = normalize(tx.get("to", "") or tx.get("contractAddress", ""))
+            if frm == addr_norm:
+                other, direction = to, "OUT"
+            elif to == addr_norm:
+                other, direction = frm, "IN"
+            else:
+                continue
+            if not other or other == addr_norm or other in PROTOCOL_CONTRACTS:
+                continue
 
-        # 从 USDT getLogs 提取对手方（transferFrom 场景 — 地址未主动发交易）
+            sym = tx.get("tokenSymbol", "ETH").upper()
+            is_usdt = "USDT" in sym
+            try:
+                dec = int(tx.get("tokenDecimal", "18") or "18")
+                amt = int(tx.get("value", "0") or "0") / (10 ** dec)
+            except Exception:
+                amt = 0.0
+            usdt_amt = amt if is_usdt else 0.0
+
+            if is_usdt:
+                if direction == "IN":
+                    chain_inflow += amt
+                    report.total_inflow_usdt += amt
+                else:
+                    chain_outflow += amt
+                    report.total_outflow_usdt += amt
+
+            counterparties.add(other)
+            counterparty_dir_stats.setdefault(other, {"IN": 0, "OUT": 0})[direction] += 1
+            s = counterparty_stats.setdefault(other, {"count": 0, "total_value": 0.0, "max_value": 0.0})
+            s["count"] += 1
+            if is_usdt:
+                s["total_value"] += amt
+                s["max_value"] = max(s["max_value"], amt)
+
+            tx_hash = tx.get("hash", "")
+            ts = tx.get("timeStamp", "")
+
+            for chk, chk_dir in [(to, "OUT" if frm == addr_norm else "IN"),
+                                  (frm, "IN"  if frm != addr_norm else "OUT")]:
+                if chk in self.blacklist and chk != addr_norm:
+                    _add_risk(chk, "blacklist", "blacklist",
+                              CATEGORY_WEIGHTS["blacklist"], chk_dir, usdt_amt, tx_hash, ts)
+
+                if chk in MIXER_CONTRACTS:
+                    report.mixer_interactions.append({
+                        "mixer": MIXER_CONTRACTS[chk], "contract": chk,
+                        "tx": tx_hash, "direction": chk_dir, "chain": chain_name,
+                    })
+                    _add_risk(chk, "mixer", "mixer",
+                              CATEGORY_WEIGHTS["mixer"], chk_dir, usdt_amt, tx_hash, ts)
+
+                bridge_info = BRIDGE_REGISTRY.get(chk)
+                if bridge_info:
+                    entry = {
+                        "bridge": bridge_info["name"], "contract": chk,
+                        "tx": tx_hash, "direction": chk_dir,
+                        "token": sym, "traceable": bridge_info["traceable"],
+                        "method": bridge_info["method"], "dst_chains": bridge_info["dst_chains"],
+                        "chain": chain_name,
+                    }
+                    if bridge_info["traceable"]:
+                        report.bridge_interactions.append(entry)
+                    else:
+                        report.opaque_bridge_interactions.append(entry)
+                        _add_risk(chk, "opaque_bridge", "opaque_bridge",
+                                  CATEGORY_WEIGHTS["opaque_bridge"], chk_dir, usdt_amt, tx_hash, ts)
+
+                if chk in HIGH_RISK_EXCHANGES:
+                    report.high_risk_exchanges.append({
+                        "exchange": HIGH_RISK_EXCHANGES_FLAT[chk], "contract": chk,
+                        "tx": tx_hash, "direction": chk_dir, "chain": chain_name,
+                    })
+                    _add_risk(chk, "high_risk_exchange", "high_risk_exchange",
+                              CATEGORY_WEIGHTS["high_risk_exchange"], chk_dir, usdt_amt, tx_hash, ts)
+
+        # USDT getLogs 补充对手方
         for log in usdt_logs:
             topics = log.get("topics", [])
             if len(topics) < 3:
@@ -879,91 +872,130 @@ class AMLAnalyzer:
             log_to   = "0x" + topics[2][-40:]
             role = log.get("_role", "")
             other = log_to if role == "sender" else log_from
+            direction = "OUT" if role == "sender" else "IN"
             if other and other != addr_norm:
                 counterparties.add(other)
-                if other not in counterparty_stats:
-                    counterparty_stats[other] = {"count": 0, "total_value": 0.0, "max_value": 0.0}
-                counterparty_stats[other]["count"] += 1
+                counterparty_dir_stats.setdefault(other, {"IN": 0, "OUT": 0})[direction] += 1
+                counterparty_stats.setdefault(other, {"count": 0, "total_value": 0.0, "max_value": 0.0})["count"] += 1
 
-        report.total_counterparties = len(counterparties)
-        print(f"  [ETH] 发现 {len(counterparties)} 个交易对手地址")
+        report.total_counterparties += len(counterparties)
+        report.per_chain_inflow[chain_name] = round(chain_inflow, 2)
+        report.per_chain_outflow[chain_name] = round(chain_outflow, 2)
+        print(f"  [{chain_label}] 1-hop 共 {len(counterparties)} 个对手方 | "
+              f"USDT 流入 {chain_inflow:,.2f} / 流出 {chain_outflow:,.2f}")
 
-        # 已知协议合约地址（排除误报）
-        PROTOCOL_CONTRACTS = {
-            "0xdac17f958d2ee523a2206206994597c13d831ec7",  # USDT 合约本身
-            "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",  # USDC 合约
-            "0x0000000000000000000000000000000000000000",  # 零地址
-        }
+        # ── 风险积累器 → RiskIndicator（1-hop）────────────────────────
+        for (cp, risk_type, via), data in risky_accum.items():
+            hop_d = HOP_DECAY[data["hop"]]
+            for d, amt in [("IN", data["in_usdt"]), ("OUT", data["out_usdt"])]:
+                if amt > 0:
+                    report.indicators.append(RiskIndicator(
+                        indicator_type=f"{risk_type}_{'received' if d == 'IN' else 'sent'}",
+                        category=data["category"],
+                        category_weight=data["category_weight"],
+                        counterparty=cp, direction=d, amount_usdt=amt,
+                        hop=data["hop"], hop_decay=hop_d,
+                        tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
+                        via_address=data["via_address"],
+                        chain=chain_name,
+                    ))
+            if data["in_usdt"] == 0.0 and data["out_usdt"] == 0.0:
+                report.indicators.append(RiskIndicator(
+                    indicator_type=f"{risk_type}_no_usdt",
+                    category=data["category"],
+                    category_weight=data["category_weight"],
+                    counterparty=cp, direction="UNKNOWN", amount_usdt=0.0,
+                    hop=data["hop"], hop_decay=hop_d,
+                    tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
+                    via_address=data["via_address"],
+                    chain=chain_name,
+                    note="无 USDT 金额，仅记录关联关系",
+                ))
 
-        # 构建 top_counterparties — 金额加权排名（替代纯频率排名）
-        # 修复：旧版按交互次数排序，DEX/交易所高频交易占满名额，
-        #       低频但大额的可疑中转地址被淹没
-        _exclude_addrs = (PROTOCOL_CONTRACTS | ALL_BRIDGE_ADDRS
-                          | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES)
-                          | KNOWN_DEX_ADDRS)
-        scored_cps = []
-        for addr, stats in counterparty_stats.items():
-            if addr in _exclude_addrs or addr in self.blacklist:
-                continue
-            # 复合评分：大额单笔最重要，其次总金额，最后频率
-            score = (stats["max_value"] * 0.6
-                     + stats["total_value"] * 0.3
-                     + stats["count"] * 0.1)
-            scored_cps.append((addr, stats, score))
-        scored_cps.sort(key=lambda x: x[2], reverse=True)
-        report.top_counterparties = [
-            {"address": addr, "tx_count": stats["count"],
-             "total_value": round(stats["total_value"], 4),
-             "max_value": round(stats["max_value"], 4),
-             "chain": "ethereum"}
-            for addr, stats, _ in scored_cps[:10]
-        ]
+        # ── top_counterparties（展示用，只取当前链）──────────────────────
+        _excl = (PROTOCOL_CONTRACTS | ALL_BRIDGE_ADDRS
+                 | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
+        scored = [(a, s, s["max_value"]*0.6 + s["total_value"]*0.3 + s["count"]*0.1)
+                  for a, s in counterparty_stats.items()
+                  if a not in _excl and a not in self.blacklist]
+        scored.sort(key=lambda x: x[2], reverse=True)
+        for a, s, _ in scored[:10]:
+            report.top_counterparties.append({
+                "address": a, "tx_count": s["count"],
+                "total_value": round(s["total_value"], 4), "max_value": round(s["max_value"], 4),
+                "in_count": counterparty_dir_stats.get(a, {}).get("IN", 0),
+                "out_count": counterparty_dir_stats.get(a, {}).get("OUT", 0),
+                "chain": chain_name,
+            })
 
-        # 1跳黑名单检测
-        for cp in counterparties:
-            if cp in PROTOCOL_CONTRACTS:
-                continue
-            if cp in self.blacklist:
-                info = self.blacklist[cp]
-                report.hop1_blacklisted.append({
-                    "address": cp,
-                    "chain": info["chain"],
-                    "blacklist_time": info["time"],
-                })
-
-        # 2跳分析（仅对非黑名单且非桥合约的对手方）
-        if depth == 1 and HOP2_ENABLED and len(counterparties) > 0:
-            clean_cps = [
-                cp for cp in counterparties
-                if cp not in self.blacklist
-                and cp not in ALL_BRIDGE_ADDRS
-                and cp not in MIXER_CONTRACTS
-            ]
-            # 取前5个对手方做2跳分析（避免请求过多）
-            sample = list(clean_cps)[:5]
+        # ── 2-hop 分析 ─────────────────────────────────────────────────
+        _stop = (set(self.blacklist) | ALL_BRIDGE_ADDRS
+                 | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
+        if HOP2_ENABLED and counterparties:
+            sample = [cp for cp in counterparties if cp not in _stop][:5]
             if sample:
-                print(f"  [ETH] 2跳分析 {len(sample)} 个对手方...")
-                for cp in sample:
-                    time.sleep(REQUEST_DELAY)
-                    cp_txs = self.eth.get_normal_txs(cp, limit=50)
-                    cp_token_txs = self.eth.get_token_transfers(cp, limit=50)
-                    for tx in cp_txs + cp_token_txs:
-                        t2 = normalize(tx.get("to", "") or "")
-                        f2 = normalize(tx.get("from", "") or "")
-                        for addr2 in [t2, f2]:
-                            if addr2 and addr2 != cp and addr2 in self.blacklist and addr2 != addr_norm:
-                                info = self.blacklist[addr2]
-                                entry = {"address": addr2, "via": cp, "chain": info["chain"], "blacklist_time": info["time"]}
-                                if entry not in report.hop2_blacklisted:
-                                    report.hop2_blacklisted.append(entry)
+                print(f"  [{chain_label}] 2-hop 分析 {len(sample)} 个中间节点...")
+            for cp in sample:
+                time.sleep(REQUEST_DELAY)
+                cp_txs = client.get_normal_txs(cp, limit=50)
+                cp_tok  = client.get_token_transfers(cp, limit=50)
+                for tx in cp_txs + cp_tok:
+                    t2 = normalize(tx.get("to", "") or "")
+                    f2 = normalize(tx.get("from", "") or "")
+                    if f2 == cp and t2 and t2 != cp:
+                        addr2, dir2 = t2, "OUT"
+                    elif t2 == cp and f2 and f2 != cp:
+                        addr2, dir2 = f2, "IN"
+                    else:
+                        continue
+                    if addr2 not in self.blacklist or addr2 == addr_norm:
+                        continue
+                    sym2 = tx.get("tokenSymbol", "").upper()
+                    try:
+                        dec2 = int(tx.get("tokenDecimal", "18") or "18")
+                        amt2 = int(tx.get("value", "0") or "0") / (10 ** dec2)
+                    except Exception:
+                        amt2 = 0.0
+                    usdt2 = amt2 if "USDT" in sym2 else 0.0
+                    _add_risk(addr2, "blacklist_hop3", "blacklist",
+                              CATEGORY_WEIGHTS["blacklist"], dir2, usdt2,
+                              tx.get("hash", ""), tx.get("timeStamp", ""), hop=2, via=cp)
 
-        # ---------- 透明桥跨链追踪 ----------
+            for (cp, risk_type, via), data in risky_accum.items():
+                if data["hop"] != 2:
+                    continue
+                hop_d = HOP_DECAY[2]
+                added = False
+                for d, amt in [("IN", data["in_usdt"]), ("OUT", data["out_usdt"])]:
+                    if amt > 0 and not added:
+                        report.indicators.append(RiskIndicator(
+                            indicator_type="blacklist_hop3",
+                            category="blacklist",
+                            category_weight=CATEGORY_WEIGHTS["blacklist"],
+                            counterparty=cp, direction=d, amount_usdt=amt,
+                            hop=2, hop_decay=hop_d,
+                            tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
+                            via_address=via, chain=chain_name,
+                        ))
+                        added = True
+                if not added:
+                    report.indicators.append(RiskIndicator(
+                        indicator_type="blacklist_hop3_no_usdt",
+                        category="blacklist",
+                        category_weight=CATEGORY_WEIGHTS["blacklist"],
+                        counterparty=cp, direction="UNKNOWN", amount_usdt=0.0,
+                        hop=2, hop_decay=hop_d,
+                        tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
+                        via_address=via, chain=chain_name, note="无 USDT 金额",
+                    ))
+
+        # ── 透明桥跨链追踪 ─────────────────────────────────────────────
         if BRIDGE_TRACE_ENABLED and report.bridge_interactions:
-            # 只追踪 OUT 方向（本地址主动发出的桥交易），最多5笔
-            out_bridges = [b for b in report.bridge_interactions if b.get("direction") == "OUT"]
+            out_bridges = [b for b in report.bridge_interactions
+                           if b.get("direction") == "OUT" and b.get("chain") == chain_name]
             seen_tx: Set[str] = set()
             if out_bridges:
-                print(f"  [ETH] 透明桥跨链追踪（{min(len(out_bridges), 5)} 笔）...")
+                print(f"  [{chain_label}] 透明桥跨链追踪（{min(len(out_bridges), 5)} 笔）...")
             for b in out_bridges[:5]:
                 tx_hash = b.get("tx", "")
                 if not tx_hash or tx_hash in seen_tx:
@@ -971,45 +1003,61 @@ class AMLAnalyzer:
                 seen_tx.add(tx_hash)
                 time.sleep(REQUEST_DELAY)
                 result = self.tracer.resolve(
-                    tx_hash=tx_hash,
-                    method=b.get("method", ""),
-                    src_address=addr_norm,
-                    dst_chains_hint=b.get("dst_chains", []),
+                    tx_hash=tx_hash, method=b.get("method", ""),
+                    src_address=addr_norm, dst_chains_hint=b.get("dst_chains", []),
                 )
                 if not result:
-                    print(f"  [ETH]   {b['bridge']}: 无法解析对端地址")
+                    print(f"  [{chain_label}]   {b['bridge']}: 无法解析对端地址")
                     continue
-
                 dst_addr  = normalize(result.get("dst_address", ""))
                 dst_chain = result.get("dst_chain", "")
-                dst_tx    = result.get("dst_tx", "")
                 finding = {
-                    "bridge":          b["bridge"],
-                    "src_tx":          tx_hash,
-                    "dst_chain":       dst_chain,
-                    "dst_address":     dst_addr,
-                    "dst_tx":          dst_tx,
-                    "blacklisted":     False,
-                    "blacklist_info":  {},
-                    "hop1_blacklisted": [],
+                    "bridge": b["bridge"], "src_tx": tx_hash,
+                    "dst_chain": dst_chain, "dst_address": dst_addr,
+                    "dst_tx": result.get("dst_tx", ""),
+                    "blacklisted": False, "blacklist_info": {}, "hop1_blacklisted": [],
+                    "src_chain": chain_name,
                 }
-
-                # 直接黑名单命中
                 if dst_addr and dst_addr in self.blacklist:
                     finding["blacklisted"] = True
                     finding["blacklist_info"] = self.blacklist[dst_addr]
-                    print(f"  [!!!] 桥接目标地址命中黑名单: {dst_addr} ({dst_chain})")
-
-                # 目标链 1 跳检测（目标链 ≠ ethereum，避免重复）
-                elif dst_addr and dst_chain and dst_chain != "ethereum":
+                    print(f"  [!!!] 桥接目标命中黑名单: {dst_addr} ({dst_chain})")
+                    report.indicators.append(RiskIndicator(
+                        indicator_type="cross_chain_blacklist",
+                        category="blacklist",
+                        category_weight=CATEGORY_WEIGHTS["blacklist"],
+                        counterparty=dst_addr, direction="OUT", amount_usdt=0.0,
+                        hop=1, hop_decay=HOP_DECAY[1],
+                        tx_hashes=[tx_hash], timestamps=[],
+                        chain=chain_name,
+                        note=f"跨链对端黑名单 ({dst_chain})",
+                    ))
+                elif dst_addr and dst_chain and dst_chain != chain_name:
                     hop1 = self._check_dst_hop1(dst_addr, dst_chain)
                     if hop1:
                         finding["hop1_blacklisted"] = hop1
-                        print(f"  [!] 桥接目标 {dst_chain}:{dst_addr[:16]}... "
-                              f"1跳内有 {len(hop1)} 个黑名单地址")
+                        print(f"  [!] 桥对端 {dst_chain}:{dst_addr[:16]}... 1跳有 {len(hop1)} 个黑名单")
+                        report.indicators.append(RiskIndicator(
+                            indicator_type="cross_chain_hop1_blacklist",
+                            category="transparent_bridge_with_bl",
+                            category_weight=CATEGORY_WEIGHTS["transparent_bridge_with_bl"],
+                            counterparty=dst_addr, direction="OUT", amount_usdt=0.0,
+                            hop=2, hop_decay=HOP_DECAY[2],
+                            tx_hashes=[tx_hash], timestamps=[],
+                            chain=chain_name,
+                            note=f"跨链对端1跳黑名单 ({dst_chain})",
+                        ))
                     else:
-                        print(f"  [ETH]   {b['bridge']} → {dst_chain}:{dst_addr[:16]}... 未发现黑名单关联")
-
+                        report.indicators.append(RiskIndicator(
+                            indicator_type="transparent_bridge",
+                            category="transparent_bridge",
+                            category_weight=CATEGORY_WEIGHTS["transparent_bridge"],
+                            counterparty=dst_addr, direction="OUT", amount_usdt=0.0,
+                            hop=1, hop_decay=HOP_DECAY[1],
+                            tx_hashes=[tx_hash], timestamps=[],
+                            chain=chain_name,
+                            note=f"透明桥无黑名单 ({dst_chain})",
+                        ))
                 report.cross_chain_findings.append(finding)
 
     # ---------- Tron 分析 ----------
@@ -1017,159 +1065,159 @@ class AMLAnalyzer:
         tron_b58 = hex_to_tron_base58(address)
         report.tron_address = tron_b58
         print(f"  [TRON] 地址转换: {address} → {tron_b58}")
-        print(f"  [TRON] 查询交易记录...")
-
         trc20_txs = self.tron.get_trc20_transfers(tron_b58)
-        trx_txs = self.tron.get_transactions(tron_b58)
+        trx_txs   = self.tron.get_transactions(tron_b58)
         report.account_info = self.tron.get_account_info(tron_b58)
-        all_txs = trc20_txs + trx_txs
-        report.total_transactions = len(all_txs)
-        print(f"  [TRON] 获取到 {len(trc20_txs)} 笔 TRC20 + {len(trx_txs)} 笔 TRX 交易")
+        report.total_transactions = len(trc20_txs) + len(trx_txs)
+        print(f"  [TRON] {len(trc20_txs)} TRC20 + {len(trx_txs)} TRX")
 
         counterparties: Set[str] = set()
         addr_b58_lower = tron_b58.lower()
-
         for tx in trc20_txs:
             f = (tx.get("from_address") or tx.get("transferFromAddress") or "").lower()
-            t = (tx.get("to_address") or tx.get("transferToAddress") or "").lower()
-            # 转换为 0x 格式做黑名单比对
-            for raw_addr in [f, t]:
-                if raw_addr and raw_addr != addr_b58_lower:
-                    counterparties.add(raw_addr)
-
+            t = (tx.get("to_address")   or tx.get("transferToAddress")   or "").lower()
+            for a in [f, t]:
+                if a and a != addr_b58_lower:
+                    counterparties.add(a)
         for tx in trx_txs:
-            ow = (tx.get("ownerAddress") or "").lower()
-            to = (tx.get("toAddress") or "").lower()
-            for raw_addr in [ow, to]:
-                if raw_addr and raw_addr != addr_b58_lower:
-                    counterparties.add(raw_addr)
+            for a in [(tx.get("ownerAddress") or "").lower(), (tx.get("toAddress") or "").lower()]:
+                if a and a != addr_b58_lower:
+                    counterparties.add(a)
 
         report.total_counterparties = len(counterparties)
-        print(f"  [TRON] 发现 {len(counterparties)} 个交易对手地址")
+        print(f"  [TRON] {len(counterparties)} 个对手方")
 
-        # Tron 地址黑名单查询：CSV 中存 0x 格式，需将 base58 转回做比对
-        # TronScan 返回的是 base58，黑名单是 0x hex；逐一转换对比
-        bl_tron = {addr: info for addr, info in self.blacklist.items() if info.get("chain") == "tron"}
-
+        bl_tron = {a: info for a, info in self.blacklist.items() if info.get("chain") == "tron"}
         for cp_b58 in counterparties:
-            # 尝试将 base58 转为 0x hex 格式查黑名单
             try:
                 cp_hex = _tron_b58_to_hex(cp_b58)
                 if cp_hex and cp_hex in bl_tron:
                     info = bl_tron[cp_hex]
-                    report.hop1_blacklisted.append({
-                        "address": cp_b58,
-                        "address_hex": cp_hex,
-                        "chain": "tron",
-                        "blacklist_time": info["time"],
-                    })
+                    report.indicators.append(RiskIndicator(
+                        indicator_type="blacklist_received",
+                        category="blacklist",
+                        category_weight=CATEGORY_WEIGHTS["blacklist"],
+                        counterparty=cp_b58, direction="IN", amount_usdt=0.0,
+                        hop=1, hop_decay=HOP_DECAY[1],
+                        tx_hashes=[], timestamps=[],
+                        chain="tron",
+                        note=f"Tron 黑名单，封禁: {info['time']}",
+                    ))
             except Exception:
                 pass
 
-    # ---------- 风险评分 ----------
+    # ---------- 风险评分（污染比例模型）----------
     def _calculate_risk(self, report: RiskReport):
-        score = 0
-        factors = []
-
         if report.is_blacklisted:
-            score = 100
-            factors.append("地址本身已被 USDT 封禁 (CRITICAL)")
-
-        else:
-            # 混币器：最高优先级
-            if report.mixer_interactions:
-                score += 40
-                names = list({m["mixer"] for m in report.mixer_interactions})
-                factors.append(f"与混币器交互: {', '.join(names)}")
-
-            # 不透明跨链桥（资金流向不可追踪，等同混币器行为）
-            if report.opaque_bridge_interactions:
-                score += 25
-                names = list({b["bridge"] for b in report.opaque_bridge_interactions})
-                factors.append(f"使用不透明跨链桥（资金流向不可追踪）: {', '.join(names)}")
-
-            # 1跳黑名单
-            h1 = len(report.hop1_blacklisted)
-            if h1 >= 3:
-                score += 35
-                factors.append(f"1跳内有 {h1} 个黑名单地址（高度可疑）")
-            elif h1 >= 1:
-                score += 20
-                factors.append(f"1跳内有 {h1} 个黑名单地址")
-
-            # 透明跨链桥
-            if report.bridge_interactions:
-                bridge_names = list({b["bridge"] for b in report.bridge_interactions})
-                if h1 > 0:
-                    score += 20
-                    factors.append(f"使用透明跨链桥且与黑名单地址关联: {', '.join(bridge_names)}")
-                else:
-                    score += 10
-                    factors.append(f"使用透明跨链桥: {', '.join(bridge_names)}")
-
-            # 2跳黑名单
-            h2 = len(report.hop2_blacklisted)
-            if h2 >= 3:
-                score += 20
-                factors.append(f"2跳内有 {h2} 个黑名单地址")
-            elif h2 >= 1:
-                score += 10
-                factors.append(f"2跳内有 {h2} 个黑名单地址")
-
-            # 跨链追踪发现
-            bl_findings  = [f for f in report.cross_chain_findings if f.get("blacklisted")]
-            hop1_findings = [f for f in report.cross_chain_findings if f.get("hop1_blacklisted")]
-            if bl_findings:
-                score += 35
-                chains = list({f["dst_chain"] for f in bl_findings})
-                factors.append(f"跨链桥对端地址命中黑名单 ({', '.join(chains)})")
-            elif hop1_findings:
-                score += 15
-                chains = list({f["dst_chain"] for f in hop1_findings})
-                factors.append(f"跨链桥对端地址 1 跳内有黑名单关联 ({', '.join(chains)})")
-
-            # 高风险交易所
-            if report.high_risk_exchanges:
-                score += 5
-                names = list({e["exchange"] for e in report.high_risk_exchanges})
-                factors.append(f"与高风险交易所交互: {', '.join(names)}")
-
-        rule_score = min(score, 100)
-
-        # ML 模型混合评分：可用时混合规则分和 ML 分，不可用时纯规则
-        ml_score = self.ml_scorer.predict_risk(report)
-        if ml_score is not None and not report.is_blacklisted:
-            # 混合策略：规则引擎 40% + ML 模型 60%
-            final_score = int(rule_score * 0.4 + ml_score * 0.6)
-            factors.append(f"ML 模型风险概率: {ml_score}% (混合权重 60%)")
-        else:
-            final_score = rule_score
-
-        final_score = min(final_score, 100)
-        report.risk_score = final_score
-        report.risk_factors = factors
-
-        if final_score == 100 or report.is_blacklisted:
+            report.risk_score = 100
             report.risk_level = "CRITICAL"
-        elif final_score >= 60:
+            report.taint_ratio = 1.0
+            report.received_exposure = 1.0
+            report.sent_exposure = 1.0
+            return
+
+        total_in  = report.total_inflow_usdt
+        total_out = report.total_outflow_usdt
+        total_flow = total_in + total_out
+
+        received_taint = 0.0
+        sent_taint     = 0.0
+        presence_only: List[RiskIndicator] = []
+
+        for ind in report.indicators:
+            if ind.amount_usdt == 0.0:
+                presence_only.append(ind)
+                continue
+            effective = ind.amount_usdt * ind.category_weight * ind.hop_decay
+            if ind.direction == "IN" and total_in > 0:
+                received_taint += effective / total_in
+            elif ind.direction == "OUT" and total_out > 0:
+                sent_taint += effective / total_out
+
+        received_taint = min(received_taint, 1.0)
+        sent_taint     = min(sent_taint, 1.0)
+
+        # 最终污染比例：取两侧较高者（同一批资金不应叠加）
+        taint_ratio = max(received_taint, sent_taint)
+
+        if total_flow == 0 and presence_only:
+            taint_ratio = min(
+                sum(ind.category_weight * ind.hop_decay * 0.5 for ind in presence_only), 1.0
+            )
+            report.warnings.append("无 USDT 交易记录，评分基于关联关系而非污染比例，准确度受限")
+        elif presence_only and taint_ratio == 0.0:
+            taint_ratio = min(
+                sum(ind.category_weight * ind.hop_decay * 0.3 for ind in presence_only), 0.5
+            )
+
+        report.received_exposure = round(received_taint, 4)
+        report.sent_exposure     = round(sent_taint, 4)
+        report.taint_ratio       = round(taint_ratio, 4)
+        report.risk_score        = min(int(taint_ratio * 100), 100)
+
+        if report.risk_score >= 100:
+            report.risk_level = "CRITICAL"
+        elif report.risk_score >= 60:
             report.risk_level = "HIGH"
-        elif final_score >= 30:
+        elif report.risk_score >= 30:
             report.risk_level = "MEDIUM"
         else:
             report.risk_level = "LOW"
 
     # ---------- 主入口 ----------
-    def analyze(self, address: str, chain: Optional[str] = None) -> RiskReport:
+    def analyze(self, address: str, chain: Optional[str] = None,
+                chains: Optional[List[str]] = None) -> RiskReport:
+        """
+        chain  : 指定单链（"ethereum"/"bsc"/... 或 "tron"），None = 自动
+        chains : 指定多链列表（优先级高于 chain），None = 自动
+        """
         addr_norm = normalize(address)
-        detected_chain = chain or detect_chain(address, self.blacklist)
-        report = RiskReport(address=addr_norm, chain=detected_chain)
+
+        # 判断链类型
+        if chain == "tron":
+            run_tron = True
+            evm_chains_to_run = []
+        elif chains:
+            run_tron = False
+            evm_chains_to_run = [c for c in chains if c in EVM_CHAIN_REGISTRY]
+        elif chain and chain in EVM_CHAIN_REGISTRY:
+            run_tron = False
+            evm_chains_to_run = [chain]
+        elif chain is None:
+            # 自动检测：黑名单中标记为 tron，或地址不以 0x 开头
+            bl_chain = self.blacklist.get(addr_norm, {}).get("chain", "")
+            if bl_chain == "tron" or not address.startswith("0x"):
+                run_tron = True
+                evm_chains_to_run = []
+            else:
+                run_tron = False
+                # 默认：只跑有 API key 的链（避免因无 key 而无效请求）
+                evm_chains_to_run = [
+                    n for n, cfg in EVM_CHAIN_REGISTRY.items()
+                    if cfg.api_key or cfg.backup_url
+                ]
+                # 至少跑 ethereum
+                if not evm_chains_to_run:
+                    evm_chains_to_run = ["ethereum"]
+        else:
+            run_tron = False
+            evm_chains_to_run = ["ethereum"]
+
+        # 决定 report 的主链标签
+        if run_tron:
+            primary_chain = "tron"
+        elif len(evm_chains_to_run) == 1:
+            primary_chain = evm_chains_to_run[0]
+        else:
+            primary_chain = "multi-evm"
+
+        report = RiskReport(address=addr_norm, chain=primary_chain)
 
         print(f"\n{'='*60}")
         print(f"分析地址: {addr_norm}")
-        print(f"链类型:   {detected_chain}")
+        print(f"链类型:   {primary_chain}")
         print(f"{'='*60}")
 
-        # 黑名单直接命中
         if addr_norm in self.blacklist:
             info = self.blacklist[addr_norm]
             report.is_blacklisted = True
@@ -1177,14 +1225,18 @@ class AMLAnalyzer:
             report.warnings.append(f"[!] 该地址已在 USDT 黑名单（封禁时间: {info['time']}）")
             print(f"  [!!!] 直接命中黑名单！封禁时间: {info['time']}")
 
-        # 链上数据分析
-        if detected_chain == "ethereum":
-            self._analyze_ethereum(addr_norm, report)
-        elif detected_chain == "tron":
+        if run_tron:
             self._analyze_tron(addr_norm, report)
+            report.chains_analyzed = ["tron"]
         else:
-            print(f"  [WARN] 不支持的链类型: {detected_chain}，尝试 Ethereum 模式")
-            self._analyze_ethereum(addr_norm, report)
+            for chain_name in evm_chains_to_run:
+                client = self.evm_clients.get(chain_name)
+                cfg = EVM_CHAIN_REGISTRY.get(chain_name)
+                if client is None or cfg is None:
+                    print(f"  [WARN] 链 {chain_name} 未配置，跳过")
+                    continue
+                self._analyze_evm_chain(addr_norm, report, cfg, client, chain_name)
+                report.chains_analyzed.append(chain_name)
 
         self._calculate_risk(report)
         return report
@@ -1194,13 +1246,11 @@ class AMLAnalyzer:
 _B58_MAP = {chr(_B58_ALPHABET[i]): i for i in range(58)}
 
 def _tron_b58_to_hex(b58_addr: str) -> Optional[str]:
-    """Tron base58check 地址 → 0x hex（20字节）"""
     try:
         num = 0
         for c in b58_addr:
             num = num * 58 + _B58_MAP[c]
         raw = num.to_bytes(25, "big")
-        # raw = 1字节前缀(41) + 20字节地址 + 4字节校验
         payload = raw[:21]
         checksum = raw[21:]
         expected = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
@@ -1213,16 +1263,16 @@ def _tron_b58_to_hex(b58_addr: str) -> Optional[str]:
 
 # ==================== 报告输出 ====================
 LEVEL_COLORS = {
-    "LOW":      "\033[92m",  # 绿
-    "MEDIUM":   "\033[93m",  # 黄
-    "HIGH":     "\033[91m",  # 红
-    "CRITICAL": "\033[95m",  # 紫
+    "LOW":      "\033[92m",
+    "MEDIUM":   "\033[93m",
+    "HIGH":     "\033[91m",
+    "CRITICAL": "\033[95m",
     "RESET":    "\033[0m",
 }
 
 
 def print_report(report: RiskReport, use_color: bool = True):
-    c = LEVEL_COLORS if use_color else {k: "" for k in LEVEL_COLORS}
+    c  = LEVEL_COLORS if use_color else {k: "" for k in LEVEL_COLORS}
     lc = c.get(report.risk_level, "")
     rc = c["RESET"]
 
@@ -1233,109 +1283,178 @@ def print_report(report: RiskReport, use_color: bool = True):
     if report.tron_address:
         print(f"  Tron地址: {report.tron_address}")
     print(f"  链:       {report.chain}")
+    if len(report.chains_analyzed) > 1:
+        print(f"  已分析链: {', '.join(report.chains_analyzed)}")
     print(f"  余额:     {report.account_info.get('balance', 'N/A')}")
     print(f"  是否合约: {'是' if report.account_info.get('is_contract') else '否'}")
-    print(f"  交易数量: {report.total_transactions}")
-    print(f"  对手方数: {report.total_counterparties}")
+    print(f"  交易数量: {report.total_transactions}  |  对手方: {report.total_counterparties}")
+    print(f"  USDT 流入: {report.total_inflow_usdt:>12,.2f}  |  流出: {report.total_outflow_usdt:>12,.2f}")
+
+    # 多链分链明细
+    if len(report.chains_analyzed) > 1:
+        print(f"  {'─'*54}")
+        print(f"  各链 USDT 流量:")
+        for cn in report.chains_analyzed:
+            inf = report.per_chain_inflow.get(cn, 0.0)
+            out = report.per_chain_outflow.get(cn, 0.0)
+            cfg = EVM_CHAIN_REGISTRY.get(cn)
+            label = cfg.name if cfg else cn
+            print(f"    {label:<12} 流入 {inf:>10,.2f}  流出 {out:>10,.2f}")
+
     print()
     print(f"  {'─'*54}")
-    print(f"  风险等级: {lc}{report.risk_level}{rc}   风险分数: {lc}{report.risk_score}/100{rc}")
+    print(f"  风险等级:   {lc}{report.risk_level}{rc}")
+    print(f"  风险分数:   {lc}{report.risk_score}/100{rc}  (污染比例 {report.taint_ratio*100:.2f}%)")
+    print(f"  收入侧暴露: {report.received_exposure*100:.2f}%  |  转出侧暴露: {report.sent_exposure*100:.2f}%")
     print(f"  {'─'*54}")
 
     if report.is_blacklisted:
         print(f"\n  {lc}[!!!] 该地址已被 USDT 直接封禁{rc}")
         print(f"        封禁时间: {report.blacklist_time}")
 
-    if report.risk_factors:
-        print(f"\n  风险因素:")
-        for f in report.risk_factors:
-            print(f"    - {f}")
+    if report.warnings:
+        print(f"\n  警告:")
+        for w in report.warnings:
+            print(f"    ⚠ {w}")
 
+    # ── 风险证据明细 ────────────────────────────────────────────────────
+    if report.indicators:
+        sorted_inds = sorted(report.indicators, key=lambda x: (x.hop, -x.amount_usdt))
+        hop1_inds = [i for i in sorted_inds if i.hop == 1 and i.amount_usdt > 0]
+        hop2_inds = [i for i in sorted_inds if i.hop == 2 and i.amount_usdt > 0]
+        pres_inds = [i for i in sorted_inds if i.amount_usdt == 0]
+
+        total_in  = report.total_inflow_usdt
+        total_out = report.total_outflow_usdt
+
+        # 地址缩写辅助函数
+        def _short(addr: str, n: int = 10) -> str:
+            return addr[:6] + "..." + addr[-4:] if len(addr) > n else addr
+
+        x = _short(report.address)
+
+        if hop1_inds:
+            print(f"\n  {'─'*54}")
+            print(f"  1-Hop 风险证据（直接交互，衰减系数 1.0）")
+            print(f"  {'─'*54}")
+            for ind in hop1_inds:
+                basis   = total_in if ind.direction == "IN" else total_out
+                contrib = (ind.amount_usdt * ind.category_weight / basis * 100) if basis > 0 else 0
+                chain_tag = f"[{ind.chain}] " if ind.chain else ""
+                cp = _short(ind.counterparty)
+                # 路径：资金流向箭头从来源指向目的地
+                if ind.direction == "IN":
+                    path = f"{cp} --{ind.amount_usdt:,.0f} USDT--> {x}"
+                else:
+                    path = f"{x} --{ind.amount_usdt:,.0f} USDT--> {cp}"
+                print(f"    {chain_tag}[{ind.category}]  {ind.amount_usdt:>12,.2f} USDT  "
+                      f"污染贡献 {contrib:.2f}%")
+                print(f"      路径: {path}")
+                print(f"      完整地址: {ind.counterparty}")
+                if ind.tx_hashes:
+                    txs_str = ind.tx_hashes[0][:20] + "..."
+                    if len(ind.tx_hashes) > 1:
+                        txs_str += f" 等{len(ind.tx_hashes)}笔"
+                    print(f"      证据tx:   {txs_str}")
+
+        if hop2_inds:
+            print(f"\n  {'─'*54}")
+            print(f"  2-Hop 风险证据（间接关联，衰减系数 0.3）")
+            print(f"  {'─'*54}")
+            for ind in hop2_inds:
+                basis   = total_in if ind.direction == "IN" else total_out
+                contrib = (ind.amount_usdt * ind.category_weight * 0.3 / basis * 100) if basis > 0 else 0
+                chain_tag = f"[{ind.chain}] " if ind.chain else ""
+                cp  = _short(ind.counterparty)
+                via = _short(ind.via_address) if ind.via_address else "?"
+                if ind.direction == "IN":
+                    path = f"{cp} --> {via} --> {x}"
+                else:
+                    path = f"{x} --> {via} --> {cp}"
+                print(f"    {chain_tag}[{ind.category}]  {ind.amount_usdt:>12,.2f} USDT  "
+                      f"污染贡献 {contrib:.2f}%（×0.3衰减）")
+                print(f"      路径: {path}")
+                print(f"      中间节点: {ind.via_address}")
+                print(f"      风险终点: {ind.counterparty}")
+                if ind.tx_hashes:
+                    print(f"      证据tx:   {ind.tx_hashes[0][:20]}...")
+
+        if pres_inds:
+            print(f"\n  {'─'*54}")
+            print(f"  关联关系（无 USDT 金额，不参与污染计算）")
+            print(f"  {'─'*54}")
+            for ind in pres_inds:
+                chain_tag = f"[{ind.chain}] " if ind.chain else ""
+                cp = _short(ind.counterparty)
+                if ind.hop == 1:
+                    path = f"{x} <-> {cp}  ({ind.direction})"
+                else:
+                    via = _short(ind.via_address) if ind.via_address else "?"
+                    path = f"{x} <-> {via} <-> {cp}  ({ind.direction})"
+                note = f"  {ind.note}" if ind.note else ""
+                print(f"    {chain_tag}[{ind.hop}-hop][{ind.category}]  路径: {path}{note}")
+
+    # ── 桥交互 ────────────────────────────────────────────────────────
     if report.bridge_interactions:
-        print(f"\n  透明跨链桥交互 ({len(report.bridge_interactions)} 笔，资金可追踪):")
-        shown = {}
+        print(f"\n  透明跨链桥（{len(report.bridge_interactions)} 笔，资金可追踪）:")
+        shown: Dict[str, dict] = {}
         for b in report.bridge_interactions:
-            key = b["bridge"]
-            if key not in shown:
-                shown[key] = {"count": 0, "directions": set(), "tokens": set(), "dst_chains": b.get("dst_chains", []), "method": b.get("method", "")}
-            shown[key]["count"] += 1
-            shown[key]["directions"].add(b.get("direction", "?"))
-            shown[key]["tokens"].add(b.get("token", "?"))
+            shown.setdefault(b["bridge"], {"count": 0, "dirs": set(), "tokens": set(),
+                                           "dst_chains": b.get("dst_chains", []),
+                                           "method": b.get("method", ""), "contract": b["contract"]})
+            shown[b["bridge"]]["count"] += 1
+            shown[b["bridge"]]["dirs"].add(b.get("direction", "?"))
+            shown[b["bridge"]]["tokens"].add(b.get("token", "?"))
         for name, info in shown.items():
-            dirs = "/".join(sorted(info["directions"]))
+            dirs   = "/".join(sorted(info["dirs"]))
             tokens = "/".join(sorted(info["tokens"]))
-            dst = "/".join(info["dst_chains"]) if info["dst_chains"] else "多链"
-            print(f"    - {name}  [{dirs}]  Token: {tokens}  次数: {info['count']}  目标链: {dst}")
-            for b in report.bridge_interactions:
-                if b["bridge"] == name:
-                    print(f"      合约: {b['contract']}  追踪方式: {b.get('method', 'N/A')}")
-                    break
+            dst    = "/".join(info["dst_chains"]) if info["dst_chains"] else "多链"
+            print(f"    - {name}  [{dirs}]  {tokens}  {info['count']}笔  → {dst}")
 
     if report.opaque_bridge_interactions:
-        print(f"\n  {lc}不透明跨链桥交互 ({len(report.opaque_bridge_interactions)} 笔，资金流向不可追踪):{rc}")
-        shown_op = {}
+        print(f"\n  {lc}不透明桥（{len(report.opaque_bridge_interactions)} 笔，资金不可追踪）:{rc}")
+        shown_op: Dict[str, dict] = {}
         for b in report.opaque_bridge_interactions:
-            key = b["bridge"]
-            if key not in shown_op:
-                shown_op[key] = {"count": 0, "directions": set(), "tokens": set()}
-            shown_op[key]["count"] += 1
-            shown_op[key]["directions"].add(b.get("direction", "?"))
-            shown_op[key]["tokens"].add(b.get("token", "?"))
+            shown_op.setdefault(b["bridge"], {"count": 0, "dirs": set()})
+            shown_op[b["bridge"]]["count"] += 1
+            shown_op[b["bridge"]]["dirs"].add(b.get("direction", "?"))
         for name, info in shown_op.items():
-            dirs = "/".join(sorted(info["directions"]))
-            tokens = "/".join(sorted(info["tokens"]))
-            print(f"    - {name}  [{dirs}]  Token: {tokens}  次数: {info['count']}")
-            for b in report.opaque_bridge_interactions:
-                if b["bridge"] == name:
-                    print(f"      合约: {b['contract']}")
-                    break
+            dirs = "/".join(sorted(info["dirs"]))
+            print(f"    - {name}  [{dirs}]  {info['count']}笔")
 
     if report.mixer_interactions:
-        print(f"\n  {lc}混币器交互 ({len(report.mixer_interactions)} 笔):{rc}")
-        for m in report.mixer_interactions:
-            print(f"    - {m['mixer']}  tx: {m['tx'][:20]}...")
-
-    if report.hop1_blacklisted:
-        print(f"\n  {lc}1跳黑名单关联地址 ({len(report.hop1_blacklisted)} 个):{rc}")
-        for h in report.hop1_blacklisted[:10]:
-            print(f"    - {h['address']}  [{h['chain']}]  封禁: {h['blacklist_time'][:10]}")
-        if len(report.hop1_blacklisted) > 10:
-            print(f"    ... 共 {len(report.hop1_blacklisted)} 个")
-
-    if report.hop2_blacklisted:
-        print(f"\n  2跳黑名单关联地址 ({len(report.hop2_blacklisted)} 个):")
-        for h in report.hop2_blacklisted[:5]:
-            print(f"    - {h['address']}  via {h['via'][:16]}...  封禁: {h['blacklist_time'][:10]}")
-        if len(report.hop2_blacklisted) > 5:
-            print(f"    ... 共 {len(report.hop2_blacklisted)} 个")
+        print(f"\n  {lc}混币器（{len(report.mixer_interactions)} 笔）:{rc}")
+        for m in report.mixer_interactions[:5]:
+            chain_tag = f"[{m.get('chain', '')}] " if m.get('chain') else ""
+            print(f"    - {chain_tag}{m['mixer']}  [{m['direction']}]  tx:{m['tx'][:20]}...")
 
     if report.high_risk_exchanges:
-        print(f"\n  高风险交易所交互:")
-        for e in report.high_risk_exchanges:
-            print(f"    - {e['exchange']}")
+        print(f"\n  高风险交易所:")
+        for e in report.high_risk_exchanges[:5]:
+            chain_tag = f"[{e.get('chain', '')}] " if e.get('chain') else ""
+            print(f"    - {chain_tag}{e['exchange']}  [{e['direction']}]")
 
     if report.cross_chain_findings:
-        print(f"\n  跨链追踪发现 ({len(report.cross_chain_findings)} 条):")
+        print(f"\n  跨链追踪（{len(report.cross_chain_findings)} 条）:")
         for f in report.cross_chain_findings:
-            dst   = f.get("dst_address", "?")
-            chain = f.get("dst_chain", "?")
-            br    = f.get("bridge", "")
+            dst = f.get("dst_address", "?")
+            ch  = f.get("dst_chain", "?")
+            br  = f.get("bridge", "")
+            src = f.get("src_chain", "")
+            src_tag = f"[{src}→{ch}] " if src else f"[→{ch}] "
             if f.get("blacklisted"):
                 bl_time = f.get("blacklist_info", {}).get("time", "")[:10]
-                print(f"  {lc}  [{br}] → {chain}:{dst}  [黑名单 封禁:{bl_time}]{rc}")
+                print(f"  {lc}  {src_tag}{br}: {dst}  [黑名单 {bl_time}]{rc}")
             elif f.get("hop1_blacklisted"):
                 n = len(f["hop1_blacklisted"])
-                print(f"    [{br}] → {chain}:{dst[:18]}...  [1跳内 {n} 个黑名单]")
-                for h in f["hop1_blacklisted"][:3]:
-                    print(f"        └ {h['address']}  封禁:{h['blacklist_time'][:10]}")
+                print(f"    {src_tag}{br}: {dst[:18]}...  [1跳内 {n} 个黑名单]")
             else:
-                print(f"    [{br}] → {chain}:{dst[:18]}...  [无直接黑名单关联]")
+                print(f"    {src_tag}{br}: {dst[:18]}...  [无直接黑名单]")
 
     print(f"\n{'='*60}\n")
 
 
 def export_json(report: RiskReport, path: str):
-    """导出 JSON 报告"""
     import dataclasses
     with open(path, "w") as f:
         json.dump(dataclasses.asdict(report), f, ensure_ascii=False, indent=2)
@@ -1345,11 +1464,12 @@ def export_json(report: RiskReport, path: str):
 # ==================== CLI ====================
 def main():
     parser = argparse.ArgumentParser(
-        description="AML 风险识别 - USDT黑名单关联地址分析",
+        description="Travis — TRAceable Verification Intelligence System",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument("address", nargs="?", help="要分析的地址（0x 格式）")
-    parser.add_argument("--chain", choices=["ethereum", "tron"], help="强制指定链类型")
+    parser.add_argument("--chain", help="强制指定链（ethereum/bsc/polygon/arbitrum/optimism/avalanche/base/tron）")
+    parser.add_argument("--chains", help="分析多条链，逗号分隔（如 ethereum,bsc,polygon）")
     parser.add_argument("--blacklist", default=BLACKLIST_CSV, help=f"黑名单 CSV 路径（默认: {BLACKLIST_CSV}）")
     parser.add_argument("--no-hop2",  action="store_true", help="禁用 2 跳分析（加快速度）")
     parser.add_argument("--no-trace", action="store_true", help="禁用透明桥跨链追踪（加快速度）")
@@ -1364,37 +1484,42 @@ def main():
     if args.no_trace:
         BRIDGE_TRACE_ENABLED = False
 
+    # 解析 --chains
+    chains_list = None
+    if args.chains:
+        chains_list = [c.strip() for c in args.chains.split(",") if c.strip()]
+
     print("[*] 加载黑名单...")
     blacklist = load_blacklist(args.blacklist)
     print(f"[*] 已加载 {len(blacklist)} 个黑名单地址")
 
-    etherscan = EtherscanClient(ETHERSCAN_API_KEY)
+    # 为每条 EVM 链创建独立客户端
+    evm_clients = {name: EVMClient(cfg) for name, cfg in EVM_CHAIN_REGISTRY.items()}
     tronscan  = TronScanClient()
     tracer    = BridgeTracer()
-    analyzer  = AMLAnalyzer(blacklist, etherscan, tronscan, tracer)
+    analyzer  = AMLAnalyzer(blacklist, evm_clients, tronscan, tracer)
 
     if args.batch:
-        # 批量模式
         with open(args.batch) as f:
             addresses = [line.strip() for line in f if line.strip()]
         print(f"[*] 批量模式：共 {len(addresses)} 个地址")
         reports = []
         for i, addr in enumerate(addresses, 1):
             print(f"\n[{i}/{len(addresses)}] 处理: {addr}")
-            report = analyzer.analyze(addr, chain=args.chain)
+            report = analyzer.analyze(addr, chain=args.chain, chains=chains_list)
             print_report(report, use_color=not args.no_color)
             reports.append(report)
             time.sleep(0.5)
-        # 批量汇总
         print(f"\n{'='*60}")
         print(f"批量分析汇总")
         print(f"{'='*60}")
         for r in reports:
-            lc = LEVEL_COLORS.get(r.risk_level, "") if not args.no_color else ""
-            rc = LEVEL_COLORS["RESET"] if not args.no_color else ""
-            h1 = len(r.hop1_blacklisted)
+            lc_c = LEVEL_COLORS.get(r.risk_level, "") if not args.no_color else ""
+            rc_c = LEVEL_COLORS["RESET"] if not args.no_color else ""
+            bl_cnt = sum(1 for ind in r.indicators if "blacklist" in ind.category and ind.hop == 1)
             bridges = len(r.bridge_interactions)
-            print(f"  {r.address[:20]}...  {lc}{r.risk_level:8s}{rc}  分数:{r.risk_score:3d}  1跳黑名单:{h1}  桥:{bridges}")
+            print(f"  {r.address[:20]}...  {lc_c}{r.risk_level:8s}{rc_c}  "
+                  f"分数:{r.risk_score:3d}  直接黑名单:{bl_cnt}  桥:{bridges}")
         if args.json:
             import dataclasses
             with open(args.json, "w") as f:
@@ -1402,13 +1527,12 @@ def main():
             print(f"[INFO] 批量 JSON 已保存: {args.json}")
 
     elif args.address:
-        report = analyzer.analyze(args.address, chain=args.chain)
+        report = analyzer.analyze(args.address, chain=args.chain, chains=chains_list)
         print_report(report, use_color=not args.no_color)
         if args.json:
             export_json(report, args.json)
 
     else:
-        # 交互模式
         print("\n[*] 进入交互模式（输入 q 退出）")
         while True:
             try:
@@ -1417,8 +1541,10 @@ def main():
                     break
                 if not addr:
                     continue
-                chain_input = input("链类型 [ethereum/tron/auto]: ").strip().lower()
-                chain_arg = chain_input if chain_input in ("ethereum", "tron") else None
+                chain_input = input(
+                    f"链类型 [{'/'.join(list(EVM_CHAIN_REGISTRY.keys()) + ['tron', 'auto'])}]: "
+                ).strip().lower()
+                chain_arg = chain_input if chain_input not in ("auto", "") else None
                 report = analyzer.analyze(addr, chain=chain_arg)
                 print_report(report, use_color=not args.no_color)
             except KeyboardInterrupt:

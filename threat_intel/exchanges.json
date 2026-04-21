@@ -1,0 +1,51 @@
+{
+  "_comment": "交易所地址库。分三类：hot_wallets=已知热钱包(低风险), high_risk=高风险/违规交易所, deposit_detection=充值地址识别参数。",
+
+  "hot_wallets": {
+    "0x28c6c06298d514db089934071355e5743bf21d60": {"name": "Binance Hot Wallet 1",    "exchange": "Binance",  "risk": "low"},
+    "0xdfd5293d8e347dfe59e90efd55b2956a1343963d": {"name": "Binance Hot Wallet 2",    "exchange": "Binance",  "risk": "low"},
+    "0x21a31ee1afc51d94c2efccaa2092ad1028285549": {"name": "Binance Hot Wallet 3",    "exchange": "Binance",  "risk": "low"},
+    "0xb38e8c17e38363af6ebdcb3dae12e0243582891d": {"name": "Binance Hot Wallet 4",    "exchange": "Binance",  "risk": "low"},
+    "0x3f5ce5fbfe3e9af3971dd833d26ba9b5c936f0be": {"name": "Binance Cold Wallet",     "exchange": "Binance",  "risk": "low"},
+    "0xd551234ae421e3bcba99a0da6d736074f22192ff": {"name": "Binance USDT Wallet",     "exchange": "Binance",  "risk": "low"},
+
+    "0x2faf487a4414fe77e2327f0bf4ae2a264a776ad2": {"name": "FTX Exchange",            "exchange": "FTX",      "risk": "low"},
+    "0xc098b2a3aa256d2140208c3de6543aaef5cd3a94": {"name": "FTX Hot Wallet",          "exchange": "FTX",      "risk": "low"},
+
+    "0x71660c4005ba85c37ccec55d0c4493e66fe775d3": {"name": "Coinbase Hot Wallet 1",   "exchange": "Coinbase", "risk": "low"},
+    "0x503828976d22510aad0201ac7ec88293211d23da": {"name": "Coinbase Hot Wallet 2",   "exchange": "Coinbase", "risk": "low"},
+    "0xddfabcdc4d8ffc6d5beaf154f18b778f892a0740": {"name": "Coinbase Hot Wallet 3",   "exchange": "Coinbase", "risk": "low"},
+
+    "0x6cc5f688a315f3dc28a7781717a9a798a59fda7b": {"name": "OKX Hot Wallet",          "exchange": "OKX",      "risk": "low"},
+    "0x236f9f97e0e62388479bf9e5ba4889e46b0273c3": {"name": "OKX Hot Wallet 2",        "exchange": "OKX",      "risk": "low"},
+
+    "0xa7efae728d2936e78bda97dc267687568dd593f3": {"name": "Kraken Hot Wallet",       "exchange": "Kraken",   "risk": "low"},
+    "0xe853c56864a2ebe4576a807d26fdc4a0ada51919": {"name": "Kraken Hot Wallet 2",     "exchange": "Kraken",   "risk": "low"},
+
+    "0x6262998ced04146fa42253a5c0af90ca02dfd2a3": {"name": "Crypto.com Deposit",     "exchange": "Crypto.com","risk": "low"},
+    "0xd24400ae8bfebb18ca49be86258a3c749cf46853": {"name": "Gemini Hot Wallet",       "exchange": "Gemini",   "risk": "low"},
+    "0xec031efe9930b50d70e82f43c94b0abdd59dcab5": {"name": "Bitfinex Hot Wallet",     "exchange": "Bitfinex", "risk": "low"},
+    "0x876eabf441b2ee5b5b0554fd502a8e0600950cfa": {"name": "Bitfinex Cold Wallet",    "exchange": "Bitfinex", "risk": "low"},
+    "0xf977814e90da44bfa03b6295a0616a897441acec": {"name": "Binance 8",               "exchange": "Binance",  "risk": "low"}
+  },
+
+  "high_risk": {
+    "0x5e4e65926ba27467555eb562121fac00d24e9dd2": {"name": "Garantex",   "exchange": "Garantex",   "risk": "high",
+      "reason": "OFAC制裁，主要服务俄罗斯违规用户"},
+    "0x45fdb1b92a649fb6a64ef1511d3ba5bf60044838": {"name": "Garantex v2","exchange": "Garantex",   "risk": "high",
+      "reason": "OFAC制裁"},
+    "0x6f259637dcd74c767781e37bc6133cd6a68aa161": {"name": "Huobi HECO", "exchange": "Huobi",      "risk": "medium",
+      "reason": "KYC执行不严，高频出现在洗钱链路"},
+    "0xab5c66752a9e8167967685f1450532fb96d5d24f": {"name": "Huobi Hot",  "exchange": "Huobi",      "risk": "medium",
+      "reason": "KYC执行不严"}
+  },
+
+  "deposit_detection": {
+    "_comment": "充值地址行为特征。满足下列条件时，该地址很可能是交易所分配给用户的充值地址。",
+    "max_unique_senders": 3,
+    "sweep_ratio_threshold": 0.92,
+    "sweep_target_must_be_exchange": true,
+    "max_hold_hours": 48,
+    "min_inflow_usdt": 10
+  }
+}

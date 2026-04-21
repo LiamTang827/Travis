@@ -1,45 +1,90 @@
-# CriptoAnalyst — 多链加密货币 AML 风险溯源系统
+# Travis
+### TRAceable Verification Intelligence System
 
-基于交易图树状追踪的区块链地址风险识别工具，支持跨链追踪与自适应深度分析。
+链上 AML 风险分析引擎。以任意地址为起点，沿交易图向外扩展，量化其与黑名单、混币器、不透明桥的关联程度，输出可审计的风险评分与完整资金路径。
 
-## 功能概述
+---
 
-- **多跳树状追踪**：以目标地址为根节点，BFS 递归展开关联地址，构建风险溯源树
-- **五类节点分类**：`blacklisted` / `suspect` / `high_risk` / `bridge_dst` / `clean`
-- **透明桥 vs 不透明桥**：区分可追踪桥（LayerZero、Rollup 官方桥）和不可追踪桥（Multichain、Synapse），后者等同混币器处理
-- **跨链追踪**：解析桥合约事件日志（calldata + getLogs），切链后继续分析
-- **自适应深度**：可疑分支自动获得额外追踪深度，平衡追踪覆盖率与算力成本
-- **风险传播**：后序遍历，每跳 ×0.6 衰减，向上传播子树最高风险
-- **Mermaid 可视化**：导出 `.md` 文件，可在 GitHub / Obsidian 直接渲染
+## 核心设计理念
+
+**传统做法**：命中黑名单 → +50 分，命中混币器 → +30 分，加法累积。  
+**问题**：金额不同、距离不同，贡献却一样，评分不可解释，无法跨地址比较。
+
+**Travis 的做法**：比例污染传播（Haircut Model），来自 FATF 合规实践：
+
+```
+污染比例 = Σ(风险金额 × 类别权重 × 跳数衰减) / 总流量
+```
+
+- 收了 10 USDT 黑钱 + 90 USDT 白钱 → 污染比例 10%，不是"命中即高危"
+- 经过中间人的间接关联自动衰减（2-hop × 0.3）
+- 每条风险证据都有对应 tx hash，可独立核实
+
+---
+
+## 功能
+
+- **多链覆盖**：Ethereum / BSC / Polygon / Arbitrum / Optimism / Avalanche / Base / Tron
+- **1-hop + 2-hop 图遍历**：直接对手方全量扫描，二跳抽样检测间接关联
+- **透明桥追踪**：LayerZero / Stargate / Hop / Celer / Across / Rollup 官方桥可追踪对端地址
+- **不透明桥识别**：Multichain / Orbiter / Synapse 等无法对应进出，等同混币器处理
+- **路径可视化**：每条风险证据展示完整资金路径，支持 1-hop 和 2-hop 两种跳数
+- **分页拉取**：自动翻页获取完整历史，遇时间窗口或无数据早停
+- **可扩展情报库**：混币器 / 桥 / 交易所地址统一维护在 `threat_intel/` JSON 文件中
+
+---
+
+## 评分模型
+
+| 风险类别 | 权重 | 说明 |
+|---------|------|------|
+| OFAC 制裁 | 1.0 | 最高级别 |
+| 勒索软件 / 黑客 | 0.9 | |
+| 暗网 / USDT 黑名单 | 0.8 | Tether 冻结地址 |
+| 混币器 | 0.7 | Tornado Cash 等 |
+| 不透明桥 | 0.6 | 资金来源不可追溯 |
+| 高风险交易所 | 0.4 | KYC 执行不严 |
+| 透明桥（有黑名单关联） | 0.3 | |
+| 透明桥（无黑名单） | 0.1 | 参考信号 |
+
+| 跳数 | 衰减系数 | 说明 |
+|------|---------|------|
+| 1-hop | 1.0 | 直接交互，全额计入 |
+| 2-hop | 0.3 | 通过中间节点的间接关联 |
+
+| 风险分数 | 等级 | 含义 |
+|---------|------|------|
+| 100 | CRITICAL | 地址本身在黑名单 |
+| 60–99 | HIGH | 高比例直接关联 |
+| 30–59 | MEDIUM | 中等污染或间接关联 |
+| 0–29 | LOW | 低风险 |
+
+---
 
 ## 文件结构
 
 ```
-├── aml_analyzer.py           # 单地址 AML 分析引擎（Etherscan + TronScan + BridgeTracer）
-├── trace_graph.py            # BFS 树状追踪引擎 + CLI 入口
-├── cross_chain_tracer.py     # 跨链桥追踪：解析单笔桥 tx 的目标链和目标地址
-│                             #   支持 Stargate / Orbiter / Across / Celer / Hop
-├── bridge/
-│   ├── bridge_event_scanner.py  # 桥事件批量扫描器（getLogs + indexed topic filter）
-│   │                            #   解决 txlist 遇合约地址断链的问题
-│   └── Etherscan_getlogs.py     # getLogs 工具脚本（Uniswap V3 池子示例）
-├── dune_data.py              # Dune Analytics 数据拉取
-├── dune_find_bridge_cases.py # 用 Dune 挖掘桥相关 AML 测试案例
-├── Etherscan_txlist.py       # Etherscan txlist 工具脚本
-├── find_test_cases.py        # 从黑名单地址挖掘测试案例
-├── usdt_blacklist.csv        # USDT 黑名单（Tether 冻结地址，~8500 条）
-├── .env.example              # 环境变量模板（API Key 配置）
-├── TRACE_LOGIC.md            # 系统追踪逻辑详细文档
-├── logic_diagrams.md         # 系统逻辑 Mermaid 图集（5 张）
-└── midterm_report_background.md  # 项目中期报告背景与文献综述
+Travis/
+├── aml_analyzer.py          # 主引擎：多链分析 + 评分 + 报告输出
+├── cross_chain_tracer.py    # 桥追踪：解析单笔桥 tx 的目标链和目标地址
+├── trace_graph.py           # BFS 树状图追踪
+├── threat_intel/            # 威胁情报数据库（JSON，无需改 Python 代码即可扩展）
+│   ├── mixers.json          #   混币器合约地址
+│   ├── bridges.json         #   跨链桥合约地址（含透明/不透明分类）
+│   └── exchanges.json       #   交易所热钱包 + 高风险所 + 充值地址检测参数
+├── usdt_blacklist.csv       # USDT 黑名单（Tether 官方冻结地址，~8500 条）
+├── .env.example             # API Key 配置模板
+└── TRACE_LOGIC.md           # 追踪逻辑详细文档
 ```
+
+---
 
 ## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-pip install requests python-dotenv pandas
+pip install requests python-dotenv
 ```
 
 ### 2. 配置 API Key
@@ -48,135 +93,124 @@ pip install requests python-dotenv pandas
 cp .env.example .env
 ```
 
-然后编辑 `.env`，填入真实的 API Key：
+编辑 `.env`：
 
 ```env
-ETHERSCAN_API_KEY=your_etherscan_api_key_here
-DUNE_API_KEY=your_dune_api_key_here
+ETHERSCAN_API_KEY=your_key   # etherscan.io/myapikey（免费，5 req/s）
+BSCSCAN_API_KEY=your_key     # bscscan.com/myapikey
+POLYGONSCAN_API_KEY=your_key
+ARBISCAN_API_KEY=your_key
+# 其余链不填则走 Blockscout 公开端点（无需 key，速率较低）
 ```
 
-- **Etherscan API Key**：免费注册于 [etherscan.io/myapikey](https://etherscan.io/myapikey)，免费版限 5 req/s
-- **Dune API Key**：免费注册于 [dune.com/settings/api](https://dune.com/settings/api)，仅 `dune_data.py` 和 `dune_find_bridge_cases.py` 需要
-
-### 3. 运行追踪
+### 3. 分析地址
 
 ```bash
-# 快速筛查（约 30 秒）
-python3 trace_graph.py 0xYourAddress --depth 2 --children 3 --nodes 10 --no-trace
+# 单链分析（快，适合日常查询）
+python3 aml_analyzer.py 0xYourAddress --chain ethereum
 
-# 标准分析（近 2 年交易）
-python3 trace_graph.py 0xYourAddress --depth 3 --time-window 730
+# 多链分析（查指定几条链）
+python3 aml_analyzer.py 0xYourAddress --chains ethereum,bsc,polygon
 
-# 深度分析 + 导出 Mermaid 图
-python3 trace_graph.py 0xYourAddress --depth 4 --nodes 60 --mermaid report.md --json report.json
+# 启用 2-hop（更深，较慢）
+python3 aml_analyzer.py 0xYourAddress --chain ethereum
+
+# 只看最近 90 天
+python3 aml_analyzer.py 0xYourAddress --chain ethereum --days 90
+
+# 导出 JSON
+python3 aml_analyzer.py 0xYourAddress --chain ethereum --json report.json
+
+# 批量分析
+python3 aml_analyzer.py --batch addresses.txt --chain ethereum
 ```
 
 ### 完整参数
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `--chain` | `ethereum` | 链类型：`ethereum` / `tron` |
-| `--depth` | `3` | 最大追踪深度 |
-| `--children` | `5` | 每节点最大子节点数 |
-| `--nodes` | `50` | 全局节点上限 |
-| `--depth-bonus` | `1` | 可疑分支额外深度 |
-| `--time-window` | `0` | 只分析最近 N 天交易（0=不限） |
-| `--mermaid FILE` | — | 导出 Mermaid 图 |
-| `--json FILE` | — | 导出 JSON 结构 |
-| `--no-trace` | — | 禁用跨链追踪 |
+| 参数 | 说明 |
+|------|------|
+| `--chain` | 指定单链（ethereum / bsc / polygon / arbitrum / optimism / avalanche / base / tron） |
+| `--chains` | 指定多链，逗号分隔（如 `ethereum,bsc`） |
+| `--no-hop2` | 禁用 2-hop 分析（加快速度） |
+| `--no-trace` | 禁用透明桥跨链追踪 |
+| `--days N` | 只分析最近 N 天的交易 |
+| `--json FILE` | 导出 JSON 报告 |
+| `--no-color` | 禁用彩色输出 |
+| `--batch FILE` | 批量模式，从文件逐行读取地址 |
 
-## 跨链追踪模块说明
+---
 
-### 问题背景
+## 输出示例
 
-`txlist` API 只能查"某地址主动发起的交易"。当追踪链遇到**桥合约地址**时，合约没有主动发起 tx，txlist 返回空，追踪断链。
+```
+============================================================
+  AML 风险分析报告
+============================================================
+  地址:     0x2aa1ca10bddd558fdfce9572d97f8cb28cd67154
+  链:       ethereum
+  USDT 流入:    65,778.05  |  流出:   288,929.06
 
-### 两种解法
+  ──────────────────────────────────────────────────────
+  风险等级:   CRITICAL
+  风险分数:   100/100  (污染比例 100.00%)
+  ──────────────────────────────────────────────────────
 
-| 模块 | 适用场景 | 方法 |
-|------|----------|------|
-| `cross_chain_tracer.py` | 已知单笔桥 tx hash | 解析 tx input calldata 或 tx receipt logs |
-| `bridge/bridge_event_scanner.py` | 给定地址，批量扫描所有跨链事件 | getLogs + indexed topic filter |
+  1-Hop 风险证据（直接交互，衰减系数 1.0）
+  ──────────────────────────────────────────────────────
+    [ethereum] [blacklist]     33,889.02 USDT  污染贡献 41.22%
+      路径: 0xee31...03a6 --33,889 USDT--> 0x2aa1...7154
+      完整地址: 0xee31de335135f4c1aac55724554b8404967303a6
+      证据tx:   0x4d42b30428b8fdc21d... 等3笔
 
-### bridge_event_scanner.py 的核心原理
-
-桥合约 emit 事件时，`sender/depositor` 通常是 `indexed` 参数，编码在 topic[1~3]。
-Etherscan getLogs 支持按 topicN 过滤，因此可以直接查询：
-
-> 合约 `0x5427...`（Celer）里，所有 `topic[2] = 发送方地址` 的 `Send` 事件
-
-不依赖 txlist，对合约地址同样有效，也能捕获通过聚合器间接触发的跨链。
-
-```bash
-# 扫描某地址的所有跨链事件
-python3 bridge/bridge_event_scanner.py 0xYourAddress
-
-# 指定 block 范围（更快）
-python3 bridge/bridge_event_scanner.py 0xYourAddress --from-block 18000000 --to-block 19500000
-
-# 保存结果到 JSON
-python3 bridge/bridge_event_scanner.py 0xYourAddress --output result.json
+  2-Hop 风险证据（间接关联，衰减系数 0.3）
+  ──────────────────────────────────────────────────────
+    [ethereum] [blacklist]     63,360.00 USDT  污染贡献 23.12%（×0.3衰减）
+      路径: 0xee31...03a6 --> 0x9f8d...1cf9 --> 0x2aa1...7154
+      中间节点: 0x9f8d9b44162b97480a7bf61da1ee89d0089c1cf9
+      风险终点: 0xee31de335135f4c1aac55724554b8404967303a6
 ```
 
-**支持的桥**：Celer cBridge v2 / Across Protocol v2+v3 / Stargate Finance / Wormhole
+---
 
-**注意**：Stargate 的 Pool Swap 事件不含目标地址（to），发现事件后需配合 `cross_chain_tracer.StargateTracer` 解析 tx calldata 获取。
+## 扩展情报库
 
-### 桥追踪矩阵（当前实现）
+新增一个混币器地址，打开 `threat_intel/mixers.json`，加一行：
 
-下表说明：每个桥在本项目里是如何识别目标链和目标地址的。
+```json
+"0x新合约地址": "名称"
+```
 
-| 桥 | 以太坊侧合约（示例） | 典型目标链（当前代码） | 解析来源 | 日志/输入中能拿到什么 | 目标链可判定 | 目标地址可判定 |
-|---|---|---|---|---|---|---|
-| Stargate Finance | `0x8731...1e98`, `0x150f...2376` | ethereum / bsc / avalanche / polygon / arbitrum / optimism / fantom / celo / zkevm / gnosis / base / xlayer / tron(214,230) | calldata + pool logs | `dstChainId`、`amount`、`to(bytes)` | 是 | 是（Pool 事件本身无 to，需解析 calldata） |
-| Across Protocol v3/v2 | `0x5c7b...35c5`, `0x4d90...7381` | ethereum / arbitrum / optimism / polygon / bsc / avalanche / base（其余按链 ID 回退为 `evm_xxx`） | receipt logs | `destinationChainId`、`depositor`、`recipient`、`amount` | 是 | 是 |
-| Celer cBridge v2 | `0x5427...1820` | ethereum / bsc / avalanche / polygon / arbitrum / optimism / fantom / celo / zkevm / gnosis / base / xlayer / tron(214,230) | receipt logs | `sender`、`receiver`、`dstChainId`、`amount` | 是 | 是 |
-| Wormhole Core Bridge | `0x98f3...288b` | 目标链在 payload/VAA 中（代码当前未内置完整链名映射） | receipt logs | `sender`、`sequence`、`payload` | 部分（需解 payload/VAA） | 部分（需解 payload/VAA） |
-| Orbiter Finance | `0x80c6...bcf8` | ethereum(9001) / tron(9002) / polygon(9006) / optimism(9007) / arbitrum(9010) / base(9016) / zksync(9018) / starknet(9019) | 启发式规则（input/value） | 链代码、候选目标地址 | 可猜测 | 可猜测（非强证明） |
+重启程序生效，无需改动任何 Python 代码。桥和交易所同理，分别对应 `bridges.json` 和 `exchanges.json`。
 
-补充：
+---
 
-- `cross_chain_tracer.py` 对 Stargate / Across / Celer / Orbiter 提供单笔解析。
-- `bridge_event_scanner.py` 用 getLogs 批量扫描 Celer / Across / Stargate / Wormhole 事件。
-- `aml_analyzer.py` 将 Orbiter 归类为不透明桥（风险处理更保守），即使单笔可做启发式推断。
-- 目标链映射主要来自 `cross_chain_tracer.py` 中的 `LAYERZERO_CHAIN_ID` 与 `ORBITER_CHAIN_CODES`。
+## 新增支持链
 
-### 跨链为何一定要看两条链
+在 `aml_analyzer.py` 的 `EVM_CHAIN_REGISTRY` 中加一条记录：
 
-跨链交易本质是“源链锁定/销毁 + 目标链解锁/铸造”，因此同一笔跨链通常对应两侧证据：
+```python
+"linea": ChainConfig(
+    name="Linea", native_token="ETH",
+    api_url="https://api.lineascan.build/api",
+    api_key=os.getenv("LINEASCAN_API_KEY", ""),
+    backup_url="https://explorer.linea.build/api",
+    usdt_contract="0xa219439258ca9da29e9cc4ce5596924745e12b93",
+    explorer_url="https://lineascan.build",
+)
+```
 
-1. 源链桥合约事件或 calldata：给出发送者、目标链 ID、金额、部分桥会给接收者。
-2. 目标链桥合约执行或 token Transfer：给出实际到账地址和到账金额。
+其余所有业务逻辑自动适配，无需修改。
 
-也就是说，光看源链只能确认“发起了跨链意图”，要确认“钱最终到谁手里”，必须在目标链继续查。
-
-### 目标链实操检查清单
-
-1. 先在源链拿到 `dst_chain_id`（或等价字段），映射到链名。
-2. 若源链日志已有 `recipient/receiver/to`，记录为候选目标地址。
-3. 若源链日志没有目标地址（如 Stargate Pool / Wormhole 部分场景），继续解析 calldata 或 payload/VAA。
-4. 到目标链浏览器查询对应 tx 或桥接后首笔 token Transfer，确认实际接收地址。
-5. 再对目标地址做 1 跳黑名单关联检查（本项目对部分 EVM 链已内置）。
-
-### 字段速查（看 log 时最有用）
-
-- Celer Send：`sender`（topic[2]）、`receiver`（topic[3]）、`dstChainId`（data）
-- Across V3FundsDeposited：`destinationChainId`、`depositor`、`recipient`、`inputAmount`
-- Stargate Swap（Pool）：`chainId`、`from`、`amountSD`（不含 to）
-- Wormhole LogMessagePublished：`sender`、`sequence`、`payload`（目标信息在 payload）
+---
 
 ## 相关文献
 
-本系统的设计参考了以下工作：
-
-- Möser et al. (2014) *Towards Risk Scoring of Bitcoin Transactions* — 多跳风险评分奠基论文
-- Hercog & Povšea (2019) *Taint Analysis of the Bitcoin Network* — TaintRank 算法
-- Liao et al. (2025) *Transaction Proximity* (Circle Research) — BFS 在 Ethereum 全图上的实践
+- Möser et al. (2014) *Towards Risk Scoring of Bitcoin Transactions*
+- Liao et al. (2025) *Transaction Proximity* — Circle Research
 - Mazorra et al. (2023) *Tracing Cross-chain Transactions between EVM-based Blockchains*
 - Sun et al. (2025) *Track and Trace: Automatically Uncovering Cross-chain Transactions*
+- FATF (2021) *Updated Guidance for a Risk-Based Approach to Virtual Assets*
 
-## 注意事项
+---
 
-- Etherscan 免费 API 有速率限制（5 req/s），分析大树时耗时较长
-- `usdt_blacklist.csv` 数据来源于 Tether 官方公开冻结记录，不包含 OFAC 制裁名单
-- 本工具仅供研究用途
+> 本工具仅供学术研究与合规分析用途。黑名单数据来源于 Tether 官方公开冻结记录。
