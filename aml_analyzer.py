@@ -34,7 +34,7 @@ PAGE_SIZE = 500        # 每页拉取条数（Etherscan 最大支持 10000，但
 MAX_PAGES = 5          # 最多翻多少页（PAGE_SIZE × MAX_PAGES = 最大历史深度）
                        # 默认 5 页 × 500 = 2500 条，覆盖普通活跃地址的完整历史
                        # 对交易所热钱包等超活跃地址，依赖时间窗口（--days）截断
-HOP2_ENABLED = True    # 是否启用二跳分析（较慢）
+HOP2_ENABLED = True    # 是否启用多跳分析（2-hop + 3-hop，较慢）
 
 # 向后兼容
 MAX_TX_FETCH = PAGE_SIZE
@@ -54,7 +54,7 @@ CATEGORY_WEIGHTS: Dict[str, float] = {
 }
 
 # Hop 距离衰减（直接交互 1.0，二跳 0.3）
-HOP_DECAY: Dict[int, float] = {1: 1.0, 2: 0.3}
+HOP_DECAY: Dict[int, float] = {1: 1.0, 2: 0.3, 3: 0.1}
 
 # BRIDGE_REGISTRY / ALL_BRIDGE_ADDRS / OPAQUE_BRIDGE_ADDRS 从 threat_intel 导入
 
@@ -928,66 +928,122 @@ class AMLAnalyzer:
                 "chain": chain_name,
             })
 
-        # ── 2-hop 分析 ─────────────────────────────────────────────────
-        _stop = (set(self.blacklist) | ALL_BRIDGE_ADDRS
-                 | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
+        # ── 2-hop / 3-hop 分析 ────────────────────────────────────────
+        # 2-hop：遍历目标地址的普通对手方（非已知协议地址），检测它们是否
+        #        直接与黑名单/混币器/不透明桥/高风险交易所交互。
+        # 3-hop：在 2-hop 中间节点的对手方里，再往外走一层，同样检测上述类别。
+        # 衰减：hop1=1.0, hop2=0.3, hop3=0.1（每多一跳，证据强度显著下降）
+        _protocol_excl = (set(self.blacklist) | ALL_BRIDGE_ADDRS
+                          | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
+
+        def _check_txs_for_risk(txs, src_addr, hop, via1, via2=""):
+            """遍历 txs，将命中风险类别的对手方写入 risky_accum。"""
+            for tx in txs:
+                t = normalize(tx.get("to", "") or "")
+                f = normalize(tx.get("from", "") or "")
+                if f == src_addr and t and t != src_addr:
+                    other, d = t, "OUT"
+                elif t == src_addr and f and f != src_addr:
+                    other, d = f, "IN"
+                else:
+                    continue
+                if other == addr_norm:
+                    continue
+                sym = tx.get("tokenSymbol", "").upper()
+                try:
+                    dec = int(tx.get("tokenDecimal", "18") or "18")
+                    amt = int(tx.get("value", "0") or "0") / (10 ** dec)
+                except Exception:
+                    amt = 0.0
+                usdt = amt if "USDT" in sym else 0.0
+                h = tx.get("hash", "")
+                ts = tx.get("timeStamp", "")
+                via = via2 if via2 else via1
+
+                if other in self.blacklist:
+                    _add_risk(other, "blacklist", "blacklist",
+                              CATEGORY_WEIGHTS["blacklist"], d, usdt, h, ts, hop=hop, via=via)
+                if other in MIXER_CONTRACTS:
+                    _add_risk(other, "mixer", "mixer",
+                              CATEGORY_WEIGHTS["mixer"], d, usdt, h, ts, hop=hop, via=via)
+                if other in OPAQUE_BRIDGE_ADDRS:
+                    _add_risk(other, "opaque_bridge", "opaque_bridge",
+                              CATEGORY_WEIGHTS["opaque_bridge"], d, usdt, h, ts, hop=hop, via=via)
+                if other in ALL_BRIDGE_ADDRS and other not in OPAQUE_BRIDGE_ADDRS:
+                    _add_risk(other, "transparent_bridge", "transparent_bridge",
+                              CATEGORY_WEIGHTS["transparent_bridge"], d, usdt, h, ts, hop=hop, via=via)
+                if other in HIGH_RISK_EXCHANGES_FLAT:
+                    _add_risk(other, "high_risk_exchange", "high_risk_exchange",
+                              CATEGORY_WEIGHTS["high_risk_exchange"], d, usdt, h, ts, hop=hop, via=via)
+
         if HOP2_ENABLED and counterparties:
-            sample = [cp for cp in counterparties if cp not in _stop][:5]
-            if sample:
-                print(f"  [{chain_label}] 2-hop 分析 {len(sample)} 个中间节点...")
-            for cp in sample:
+            # 2-hop 中间节点：排除已知高风险地址（它们已在 1-hop 检测到）
+            hop2_nodes = [cp for cp in counterparties if cp not in _protocol_excl][:5]
+            if hop2_nodes:
+                print(f"  [{chain_label}] 2-hop 分析 {len(hop2_nodes)} 个中间节点...")
+
+            hop3_nodes: List[tuple] = []  # (addr, via_cp)
+
+            for cp in hop2_nodes:
                 time.sleep(REQUEST_DELAY)
                 cp_txs = client.get_normal_txs(cp, limit=50)
-                cp_tok  = client.get_token_transfers(cp, limit=50)
+                cp_tok = client.get_token_transfers(cp, limit=50)
+                _check_txs_for_risk(cp_txs + cp_tok, cp, hop=2, via1=cp)
+
+                # 收集 2-hop 对手方作为 3-hop 候选（排除协议地址和已知风险地址）
                 for tx in cp_txs + cp_tok:
                     t2 = normalize(tx.get("to", "") or "")
                     f2 = normalize(tx.get("from", "") or "")
-                    if f2 == cp and t2 and t2 != cp:
-                        addr2, dir2 = t2, "OUT"
-                    elif t2 == cp and f2 and f2 != cp:
-                        addr2, dir2 = f2, "IN"
-                    else:
-                        continue
-                    if addr2 not in self.blacklist or addr2 == addr_norm:
-                        continue
-                    sym2 = tx.get("tokenSymbol", "").upper()
-                    try:
-                        dec2 = int(tx.get("tokenDecimal", "18") or "18")
-                        amt2 = int(tx.get("value", "0") or "0") / (10 ** dec2)
-                    except Exception:
-                        amt2 = 0.0
-                    usdt2 = amt2 if "USDT" in sym2 else 0.0
-                    _add_risk(addr2, "blacklist_hop3", "blacklist",
-                              CATEGORY_WEIGHTS["blacklist"], dir2, usdt2,
-                              tx.get("hash", ""), tx.get("timeStamp", ""), hop=2, via=cp)
+                    for n in [t2, f2]:
+                        if n and n != cp and n != addr_norm and n not in _protocol_excl:
+                            hop3_nodes.append((n, cp))
 
-            for (cp, risk_type, via), data in risky_accum.items():
-                if data["hop"] != 2:
-                    continue
-                hop_d = HOP_DECAY[2]
-                added = False
-                for d, amt in [("IN", data["in_usdt"]), ("OUT", data["out_usdt"])]:
-                    if amt > 0 and not added:
-                        report.indicators.append(RiskIndicator(
-                            indicator_type="blacklist_hop3",
-                            category="blacklist",
-                            category_weight=CATEGORY_WEIGHTS["blacklist"],
-                            counterparty=cp, direction=d, amount_usdt=amt,
-                            hop=2, hop_decay=hop_d,
-                            tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
-                            via_address=via, chain=chain_name,
-                        ))
-                        added = True
-                if not added:
+            # 3-hop：从 2-hop 对手方再走一层，最多取 3 个节点
+            seen3: Set[str] = set()
+            hop3_sample = []
+            for addr3, via_cp in hop3_nodes:
+                if addr3 not in seen3:
+                    seen3.add(addr3)
+                    hop3_sample.append((addr3, via_cp))
+                if len(hop3_sample) >= 3:
+                    break
+
+            if hop3_sample:
+                print(f"  [{chain_label}] 3-hop 分析 {len(hop3_sample)} 个节点...")
+            for addr3, via_cp in hop3_sample:
+                time.sleep(REQUEST_DELAY)
+                txs3 = client.get_normal_txs(addr3, limit=30)
+                tok3 = client.get_token_transfers(addr3, limit=30)
+                _check_txs_for_risk(txs3 + tok3, addr3, hop=3, via1=via_cp, via2=addr3)
+
+        # 将 risky_accum 中 hop>=2 的记录转为 RiskIndicator
+        for (cp, risk_type, via), data in risky_accum.items():
+            if data["hop"] < 2:
+                continue
+            hop_d = HOP_DECAY[data["hop"]]
+            added = False
+            for d, amt in [("IN", data["in_usdt"]), ("OUT", data["out_usdt"])]:
+                if amt > 0 and not added:
                     report.indicators.append(RiskIndicator(
-                        indicator_type="blacklist_hop3_no_usdt",
-                        category="blacklist",
-                        category_weight=CATEGORY_WEIGHTS["blacklist"],
-                        counterparty=cp, direction="UNKNOWN", amount_usdt=0.0,
-                        hop=2, hop_decay=hop_d,
+                        indicator_type=f"{risk_type}_hop{data['hop']+1}",
+                        category=data["category"],
+                        category_weight=data["category_weight"],
+                        counterparty=cp, direction=d, amount_usdt=amt,
+                        hop=data["hop"], hop_decay=hop_d,
                         tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
-                        via_address=via, chain=chain_name, note="无 USDT 金额",
+                        via_address=via, chain=chain_name,
                     ))
+                    added = True
+            if not added:
+                report.indicators.append(RiskIndicator(
+                    indicator_type=f"{risk_type}_hop{data['hop']+1}_no_usdt",
+                    category=data["category"],
+                    category_weight=data["category_weight"],
+                    counterparty=cp, direction="UNKNOWN", amount_usdt=0.0,
+                    hop=data["hop"], hop_decay=hop_d,
+                    tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
+                    via_address=via, chain=chain_name, note="无 USDT 金额",
+                ))
 
         # ── 透明桥跨链追踪 ─────────────────────────────────────────────
         if BRIDGE_TRACE_ENABLED and report.bridge_interactions:
@@ -1322,6 +1378,7 @@ def print_report(report: RiskReport, use_color: bool = True):
         sorted_inds = sorted(report.indicators, key=lambda x: (x.hop, -x.amount_usdt))
         hop1_inds = [i for i in sorted_inds if i.hop == 1 and i.amount_usdt > 0]
         hop2_inds = [i for i in sorted_inds if i.hop == 2 and i.amount_usdt > 0]
+        hop3_inds = [i for i in sorted_inds if i.hop == 3 and i.amount_usdt > 0]
         pres_inds = [i for i in sorted_inds if i.amount_usdt == 0]
 
         total_in  = report.total_inflow_usdt
@@ -1375,6 +1432,27 @@ def print_report(report: RiskReport, use_color: bool = True):
                       f"污染贡献 {contrib:.2f}%（×0.3衰减）")
                 print(f"      路径: {path}")
                 print(f"      中间节点: {ind.via_address}")
+                print(f"      风险终点: {ind.counterparty}")
+                if ind.tx_hashes:
+                    print(f"      证据tx:   {ind.tx_hashes[0][:20]}...")
+
+        if hop3_inds:
+            print(f"\n  {'─'*54}")
+            print(f"  3-Hop 风险证据（远端关联，衰减系数 0.1）")
+            print(f"  {'─'*54}")
+            for ind in hop3_inds:
+                basis   = total_in if ind.direction == "IN" else total_out
+                contrib = (ind.amount_usdt * ind.category_weight * 0.1 / basis * 100) if basis > 0 else 0
+                chain_tag = f"[{ind.chain}] " if ind.chain else ""
+                cp  = _short(ind.counterparty)
+                via = _short(ind.via_address) if ind.via_address else "?"
+                if ind.direction == "IN":
+                    path = f"{cp} --> {via} --> ... --> {x}"
+                else:
+                    path = f"{x} --> ... --> {via} --> {cp}"
+                print(f"    {chain_tag}[{ind.category}]  {ind.amount_usdt:>12,.2f} USDT  "
+                      f"污染贡献 {contrib:.2f}%（×0.1衰减）")
+                print(f"      路径: {path}")
                 print(f"      风险终点: {ind.counterparty}")
                 if ind.tx_hashes:
                     print(f"      证据tx:   {ind.tx_hashes[0][:20]}...")
