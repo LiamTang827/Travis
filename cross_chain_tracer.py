@@ -196,10 +196,8 @@ class StargateTracer(BridgeTracer):
 class OrbiterTracer(BridgeTracer):
     """
     Orbiter Finance 追踪
-    Orbiter 的特殊机制：
-    - 转账金额末4位是目标链标识（如 9002 = Tron, 9001 = ETH, 9006 = Polygon）
-    - 目标地址通常与源地址相同（同一 EOA 在多链的地址）
-    - 没有特殊事件，直接看转账 value 的末4位
+    Maker / liquidity routing 模式下，链上通常无法强验证收款方。
+    这里保留桥识别，但不再把启发式推断当作确定目标地址。
     """
     name = "Orbiter Finance"
     CONTRACT = "0x80c67432656d59144ceff962e8faf8926599bcf8"
@@ -216,40 +214,16 @@ class OrbiterTracer(BridgeTracer):
     }
 
     def trace(self, tx_hash: str, sender: str) -> Optional[Dict]:
-        """Orbiter 的目标地址 = 发送者在目标链上的同一地址"""
         print(f"    [Orbiter] 解析交易 {tx_hash[:20]}...")
-        inp = get_tx_input(tx_hash)
-        if not inp:
-            return None
-
-        # Orbiter 的 input data 通常包含：目标链Code + 目标地址
-        # 格式: 0x + chain_code (4 bytes) + dst_address (20 bytes) 或直接 value 末4位
-        try:
-            # 简单情况：input data 包含目标地址
-            if len(inp) >= 50:  # 0x + 至少20字节地址
-                raw = bytes.fromhex(inp[2:])
-                if len(raw) >= 20:
-                    # 末尾20字节可能是目标地址
-                    dst_bytes = raw[-20:]
-                    chain_code = inp[-4:]  # 末4位是链code
-                    dst_chain  = self.ORBITER_CHAIN_CODES.get(chain_code, "unknown")
-
-                    dst_addr = "0x" + dst_bytes.hex()
-                    if dst_chain == "tron":
-                        dst_addr = hex_to_tron(dst_addr)
-
-                    return {
-                        "bridge": self.name,
-                        "tx_hash": tx_hash,
-                        "sender": sender,
-                        "dst_chain": dst_chain,
-                        "dst_address": dst_addr,
-                        "note": "Orbiter: 目标地址通常与源地址相同（同一助记词）",
-                    }
-        except Exception as e:
-            print(f"    [Orbiter] 解析失败: {e}")
-
-        return None
+        return {
+            "bridge": self.name,
+            "tx_hash": tx_hash,
+            "sender": sender,
+            "dst_chain": "unknown",
+            "dst_address": "不透明桥：目标地址无法从链上强验证",
+            "opaque": True,
+            "note": "Orbiter 采用 maker / liquidity routing 模式，启发式推断不作为强证据。",
+        }
 
 
 class AcrossTracer(BridgeTracer):

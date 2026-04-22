@@ -21,3 +21,8 @@ __pycache__/
 usdt_blacklist.csv
 #ml
 ml/data/
+.gstack/
+
+# Node.js
+node_modules/
+frontend/dist/

@@ -31,8 +31,14 @@ from aml_analyzer import (
     ETHERSCAN_API_KEY, BLACKLIST_CSV, REQUEST_DELAY,
     BRIDGE_REGISTRY, ALL_BRIDGE_ADDRS, OPAQUE_BRIDGE_ADDRS,
     MIXER_CONTRACTS, CHAIN_SCANNERS, LZ_CHAIN_MAP,
+    HIGH_RISK_EXCHANGES, KNOWN_DEX_ADDRS,
     normalize,
 )
+# CEX 地址表从 feature_engineer 复用（aml_analyzer 没有统一的 CEX 集合）
+try:
+    from ml.feature_engineer import KNOWN_CEX_ADDRS
+except ImportError:
+    KNOWN_CEX_ADDRS: set = set()
 
 # ==================== 节点类型 ====================
 NODE_CLEAN          = "clean"           # 普通地址，无已知风险
@@ -60,12 +66,28 @@ NODE_RISK_WEIGHT = {
     NODE_CLEAN:           0,
 }
 
-# 深度 → 污染衰减系数（每跳 ×0.6）
-# 深度1直接接触: 系数=1.0 → CRITICAL/HIGH
-# 深度2二跳:     系数=0.6 → HIGH/MEDIUM
-# 深度3三跳:     系数=0.36 → MEDIUM
-# 深度4+远距:    系数=≤0.22 → LOW
+# 旧版固定衰减系数（保留用于 --legacy 模式对比）
 DEPTH_DECAY = 0.6
+
+# 改进版：节点类型 → 风险传播率
+# 原理（Möser 2014, Liao 2025）：不同类型节点对 taint 的"传导能力"完全不同。
+# 混币器几乎 100% 传导（使用它就是为了隐匿），CEX 则近乎隔断（千万用户共用）。
+NODE_PROPAGATION_RATE = {
+    NODE_BLACKLISTED:   0.95,  # 风险源本身，几乎完全传导
+    NODE_MIXER:         0.85,  # 混币器：进入的资金几乎都是隐匿目的
+    NODE_OPAQUE_BRIDGE: 0.80,  # 不透明桥：资金流不可追踪，高风险
+    NODE_HIGH_RISK:     0.70,  # 综合高风险节点
+    NODE_SUSPECT:       0.50,  # 中转嫌疑：来源不明但本身未直接接触黑名单
+    NODE_BRIDGE_DST:    0.40,  # 透明桥目标：来源已知可追踪，不确定性低于中转
+    NODE_CLEAN:         0.30,  # 普通地址：低传导
+}
+
+# 已知实体类型覆盖（比 node_type 更精确）
+ENTITY_PROPAGATION_OVERRIDE = {
+    "cex":          0.05,  # CEX：日均千万笔交易，单一连接无统计意义
+    "dex":          0.15,  # DEX Router：公开协议，大量正常用户
+    "high_risk_ex": 0.60,  # 高风险交易所（Garantex 等）：KYC 不足，传导较高
+}
 
 
 # ==================== 数据结构 ====================
@@ -243,7 +265,8 @@ class TraceGraph:
         elif report.mixer_interactions or report.opaque_bridge_interactions:
             # 用户使用了混币器/不透明桥 → 可疑，但仍可继续追踪其他对手方
             node.node_type = NODE_SUSPECT
-        elif len(report.hop1_blacklisted) >= 3 or report.risk_score >= 60:
+        elif report.risk_score >= 60:
+            # 分数由 _calculate_risk 已按方向加权计算，直接用分数阈值判断
             node.node_type = NODE_HIGH_RISK
         elif node.via_bridge:
             node.node_type = NODE_BRIDGE_DST
