@@ -42,15 +42,15 @@ MAX_TX_FETCH = PAGE_SIZE
 # ==================== 风险类别权重（参考 FATF 风险等级）====================
 CATEGORY_WEIGHTS: Dict[str, float] = {
     "ofac_sanctioned":            1.0,
-    "ransomware":                 0.9,
-    "theft_hack":                 0.9,
-    "darknet":                    0.8,
-    "blacklist":                  0.8,   # USDT 黑名单（未分类）
-    "mixer":                      0.7,
-    "opaque_bridge":              0.6,
-    "high_risk_exchange":         0.4,
-    "transparent_bridge_with_bl": 0.3,
-    "transparent_bridge":         0.1,
+    "ransomware":                 1.0,
+    "theft_hack":                 1.0,
+    "darknet":                    1.0,
+    "blacklist":                  1.0,   # USDT 黑名单（未分类）
+    "mixer":                      0.5,
+    "opaque_bridge":              0.5,
+    "high_risk_exchange":         0.5,
+    "transparent_bridge_with_bl": 0.5,   # 透明桥但对端有黑名单，污染等级同混币器
+    "transparent_bridge":         0.3,
 }
 
 # Hop 距离衰减（直接交互 1.0，二跳 0.3）
@@ -764,6 +764,8 @@ class AMLAnalyzer:
         counterparties: Set[str] = set()
         counterparty_dir_stats: Dict[str, Dict[str, int]] = {}
         counterparty_stats: Dict[str, Dict] = {}
+        # 记录被分析地址与每个对手方的实际 USDT 往来（用于 2-hop 金额）
+        cp_usdt_flow: Dict[str, Dict[str, float]] = {}  # cp -> {"IN": x, "OUT": y}
 
         # 风险积累器：key = (counterparty, risk_type, via_address)
         risky_accum: Dict[tuple, dict] = {}
@@ -826,6 +828,9 @@ class AMLAnalyzer:
             if is_usdt:
                 s["total_value"] += amt
                 s["max_value"] = max(s["max_value"], amt)
+                # 记录实际边金额，供 2-hop 使用
+                flow = cp_usdt_flow.setdefault(other, {"IN": 0.0, "OUT": 0.0})
+                flow[direction] += amt
 
             tx_hash = tx.get("hash", "")
             ts = tx.get("timeStamp", "")
@@ -943,8 +948,14 @@ class AMLAnalyzer:
         _protocol_excl = (set(self.blacklist) | ALL_BRIDGE_ADDRS
                           | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
 
-        def _check_txs_for_risk(txs, src_addr, hop, via1, via2=""):
-            """遍历 txs，将命中风险类别的对手方写入 risky_accum。"""
+        def _check_txs_for_risk(txs, src_addr, hop, via1):
+            """扫描 cp（src_addr）的交易，找出它接触的最高风险类别。
+            金额用被分析地址与 cp 的实际 1-hop USDT 边，不用 cp 自身的交易金额。
+            每个方向（IN/OUT）只产生一条 indicator，避免同一条边被多次计入。
+            """
+            # best[direction] = (category, weight, risky_counterparty, tx_hash, ts)
+            best: Dict[str, tuple] = {}
+
             for tx in txs:
                 t = normalize(tx.get("to", "") or "")
                 f = normalize(tx.get("from", "") or "")
@@ -956,32 +967,32 @@ class AMLAnalyzer:
                     continue
                 if not other or other == addr_norm or other in PROTOCOL_CONTRACTS:
                     continue
-                sym = tx.get("tokenSymbol", "").upper()
-                try:
-                    dec = int(tx.get("tokenDecimal", "18") or "18")
-                    amt = int(tx.get("value", "0") or "0") / (10 ** dec)
-                except Exception:
-                    amt = 0.0
-                usdt = amt if "USDT" in sym else 0.0
-                h = tx.get("hash", "")
-                ts = tx.get("timeStamp", "")
-                via = via2 if via2 else via1
 
+                h  = tx.get("hash", "")
+                ts = tx.get("timeStamp", "")
+
+                # 按权重从高到低检测，取当前方向已记录的最高者
+                candidates = []
                 if other in self.blacklist:
-                    _add_risk(other, "blacklist", "blacklist",
-                              CATEGORY_WEIGHTS["blacklist"], d, usdt, h, ts, hop=hop, via=via)
+                    candidates.append(("blacklist",       CATEGORY_WEIGHTS["blacklist"],       other))
                 if other in MIXER_CONTRACTS:
-                    _add_risk(other, "mixer", "mixer",
-                              CATEGORY_WEIGHTS["mixer"], d, usdt, h, ts, hop=hop, via=via)
+                    candidates.append(("mixer",           CATEGORY_WEIGHTS["mixer"],           other))
                 if other in OPAQUE_BRIDGE_ADDRS:
-                    _add_risk(other, "opaque_bridge", "opaque_bridge",
-                              CATEGORY_WEIGHTS["opaque_bridge"], d, usdt, h, ts, hop=hop, via=via)
-                if other in ALL_BRIDGE_ADDRS and other not in OPAQUE_BRIDGE_ADDRS:
-                    _add_risk(other, "transparent_bridge", "transparent_bridge",
-                              CATEGORY_WEIGHTS["transparent_bridge"], d, usdt, h, ts, hop=hop, via=via)
+                    candidates.append(("opaque_bridge",   CATEGORY_WEIGHTS["opaque_bridge"],   other))
                 if other in HIGH_RISK_EXCHANGES_FLAT:
-                    _add_risk(other, "high_risk_exchange", "high_risk_exchange",
-                              CATEGORY_WEIGHTS["high_risk_exchange"], d, usdt, h, ts, hop=hop, via=via)
+                    candidates.append(("high_risk_exchange", CATEGORY_WEIGHTS["high_risk_exchange"], other))
+                if other in ALL_BRIDGE_ADDRS and other not in OPAQUE_BRIDGE_ADDRS:
+                    candidates.append(("transparent_bridge", CATEGORY_WEIGHTS["transparent_bridge"], other))
+
+                for cat, w, risky_cp in candidates:
+                    prev = best.get(d)
+                    if prev is None or w > prev[1]:
+                        best[d] = (cat, w, risky_cp, h, ts)
+
+            # 每个方向取最高风险类别，金额用 1-hop 边实际往来
+            for d, (cat, w, risky_cp, h, ts) in best.items():
+                edge_amt = cp_usdt_flow.get(src_addr, {}).get(d, 0.0)
+                _add_risk(risky_cp, cat, cat, w, d, edge_amt, h, ts, hop=hop, via=via1)
 
         if HOP2_ENABLED and counterparties:
             # 2-hop 中间节点：排除已知高风险地址（它们已在 1-hop 检测到）
