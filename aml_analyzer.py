@@ -948,20 +948,22 @@ class AMLAnalyzer:
         _protocol_excl = (set(self.blacklist) | ALL_BRIDGE_ADDRS
                           | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
 
-        def _check_txs_for_risk(txs, src_addr, hop, via1):
-            """扫描 cp（src_addr）的交易，找出它接触的最高风险类别。
-            金额用被分析地址与 cp 的实际 1-hop USDT 边，不用 cp 自身的交易金额。
-            每个方向（IN/OUT）只产生一条 indicator，避免同一条边被多次计入。
+        def _score_cp_node(txs, cp_addr) -> Dict[str, tuple]:
+            """计算中间节点 cp 的风险评分。
+            返回 {direction: (category, node_score, risky_entity, tx_hash, ts)}
+            - direction: cp 与风险实体的交互方向（同时也是被分析地址的资金方向）
+            - node_score: cp 接触的最高类别权重，代表 cp 节点的危险程度
+            - risky_entity: cp 接触的具体风险地址（仅用于展示/溯源）
+            后续可在此函数内加入更多手法识别（peel chain、structuring 等）。
             """
-            # best[direction] = (category, weight, risky_counterparty, tx_hash, ts)
-            best: Dict[str, tuple] = {}
+            best: Dict[str, tuple] = {}  # direction -> (cat, score, risky_addr, hash, ts)
 
             for tx in txs:
                 t = normalize(tx.get("to", "") or "")
                 f = normalize(tx.get("from", "") or "")
-                if f == src_addr and t and t != src_addr:
+                if f == cp_addr and t and t != cp_addr:
                     other, d = t, "OUT"
-                elif t == src_addr and f and f != src_addr:
+                elif t == cp_addr and f and f != cp_addr:
                     other, d = f, "IN"
                 else:
                     continue
@@ -971,28 +973,23 @@ class AMLAnalyzer:
                 h  = tx.get("hash", "")
                 ts = tx.get("timeStamp", "")
 
-                # 按权重从高到低检测，取当前方向已记录的最高者
                 candidates = []
                 if other in self.blacklist:
-                    candidates.append(("blacklist",       CATEGORY_WEIGHTS["blacklist"],       other))
+                    candidates.append(("blacklist",          CATEGORY_WEIGHTS["blacklist"],          other))
                 if other in MIXER_CONTRACTS:
-                    candidates.append(("mixer",           CATEGORY_WEIGHTS["mixer"],           other))
+                    candidates.append(("mixer",              CATEGORY_WEIGHTS["mixer"],              other))
                 if other in OPAQUE_BRIDGE_ADDRS:
-                    candidates.append(("opaque_bridge",   CATEGORY_WEIGHTS["opaque_bridge"],   other))
+                    candidates.append(("opaque_bridge",      CATEGORY_WEIGHTS["opaque_bridge"],      other))
                 if other in HIGH_RISK_EXCHANGES_FLAT:
                     candidates.append(("high_risk_exchange", CATEGORY_WEIGHTS["high_risk_exchange"], other))
                 if other in ALL_BRIDGE_ADDRS and other not in OPAQUE_BRIDGE_ADDRS:
                     candidates.append(("transparent_bridge", CATEGORY_WEIGHTS["transparent_bridge"], other))
 
-                for cat, w, risky_cp in candidates:
-                    prev = best.get(d)
-                    if prev is None or w > prev[1]:
-                        best[d] = (cat, w, risky_cp, h, ts)
+                for cat, score, risky_addr in candidates:
+                    if d not in best or score > best[d][1]:
+                        best[d] = (cat, score, risky_addr, h, ts)
 
-            # 每个方向取最高风险类别，金额用 1-hop 边实际往来
-            for d, (cat, w, risky_cp, h, ts) in best.items():
-                edge_amt = cp_usdt_flow.get(src_addr, {}).get(d, 0.0)
-                _add_risk(risky_cp, cat, cat, w, d, edge_amt, h, ts, hop=hop, via=via1)
+            return best
 
         if HOP2_ENABLED and counterparties:
             # 2-hop 中间节点：排除已知高风险地址（它们已在 1-hop 检测到）
@@ -1000,42 +997,34 @@ class AMLAnalyzer:
             if hop2_nodes:
                 print(f"  [{chain_label}] 2-hop 分析 {len(hop2_nodes)} 个中间节点...")
 
+            hop_d = HOP_DECAY[2]
             for cp in hop2_nodes:
                 time.sleep(REQUEST_DELAY)
                 cp_txs = client.get_normal_txs(cp, limit=50)
                 cp_tok = client.get_token_transfers(cp, limit=50)
-                _check_txs_for_risk(cp_txs + cp_tok, cp, hop=2, via1=cp)
+                cp_risk = _score_cp_node(cp_txs + cp_tok, cp)
+                if not cp_risk:
+                    continue
 
-        # 将 risky_accum 中 hop>=2 的记录转为 RiskIndicator
-        for (cp, risk_type, via), data in risky_accum.items():
-            if data["hop"] < 2:
-                continue
-            if cp == addr_norm:  # 不应出现，防御性过滤
-                continue
-            hop_d = HOP_DECAY[data["hop"]]
-            added = False
-            for d, amt in [("IN", data["in_usdt"]), ("OUT", data["out_usdt"])]:
-                if amt > 0 and not added:
+                # cp 是被评分的节点：counterparty=cp, via_address=cp 接触的风险实体
+                # 金额=被分析地址与 cp 的实际往来，权重=cp 节点风险评分
+                edge = cp_usdt_flow.get(cp, {})
+                for d, (cat, node_score, risky_entity, h, ts) in cp_risk.items():
+                    edge_amt = edge.get(d, 0.0)
                     report.indicators.append(RiskIndicator(
-                        indicator_type=f"{risk_type}_hop{data['hop']+1}",
-                        category=data["category"],
-                        category_weight=data["category_weight"],
-                        counterparty=cp, direction=d, amount_usdt=amt,
-                        hop=data["hop"], hop_decay=hop_d,
-                        tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
-                        via_address=via, chain=chain_name,
+                        indicator_type=f"cp_node_{cat}",
+                        category=cat,
+                        category_weight=node_score,
+                        counterparty=cp,
+                        direction=d,
+                        amount_usdt=edge_amt,
+                        hop=2,
+                        hop_decay=hop_d,
+                        tx_hashes=[h] if h else [],
+                        timestamps=[ts] if ts else [],
+                        via_address=risky_entity,
+                        chain=chain_name,
                     ))
-                    added = True
-            if not added:
-                report.indicators.append(RiskIndicator(
-                    indicator_type=f"{risk_type}_hop{data['hop']+1}_no_usdt",
-                    category=data["category"],
-                    category_weight=data["category_weight"],
-                    counterparty=cp, direction="UNKNOWN", amount_usdt=0.0,
-                    hop=data["hop"], hop_decay=hop_d,
-                    tx_hashes=data["tx_hashes"], timestamps=data["timestamps"],
-                    via_address=via, chain=chain_name, note="无 USDT 金额",
-                ))
 
         # ── 透明桥跨链追踪 ─────────────────────────────────────────────
         if BRIDGE_TRACE_ENABLED and report.bridge_interactions:
