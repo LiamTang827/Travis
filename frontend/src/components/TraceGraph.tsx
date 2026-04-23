@@ -54,7 +54,6 @@ export default function TraceGraph({ report }: Props) {
     const inds = report.indicators.filter(i => i.amount_usdt > 0)
     const hop1 = inds.filter(i => i.hop === 1)
     const hop2 = inds.filter(i => i.hop === 2)
-    const hop3 = inds.filter(i => i.hop === 3)
 
     // 1-hop 节点（扇形分布）
     hop1.forEach((ind, idx) => {
@@ -125,42 +124,6 @@ export default function TraceGraph({ report }: Props) {
           source: cp,
           target: via,
           style: { stroke: bg, strokeDasharray: '5,4' },
-          animated: false,
-        })
-      }
-    })
-
-    // 3-hop 节点（最外圈 r=760，透明度更低）
-    hop3.forEach((ind, idx) => {
-      const angle = (idx / Math.max(hop3.length, 1)) * 2 * Math.PI
-      const r = 760
-      const x = Math.cos(angle) * r
-      const y = Math.sin(angle) * r
-      const bg = CATEGORY_COLOR[ind.category] ?? '#6b7280'
-      const cp = ind.counterparty
-      const via = ind.via_address
-
-      if (!seen.has(cp)) {
-        nodes.push({
-          id: cp,
-          position: { x, y },
-          data: { label: short(cp) },
-          style: {
-            background: bg, color: '#fff',
-            border: `1px dashed ${bg}`,
-            borderRadius: 8, fontSize: 10,
-            padding: '4px 8px', opacity: 0.6,
-          },
-        })
-        seen.add(cp)
-      }
-
-      if (via && seen.has(via)) {
-        edges.push({
-          id: `e3-${cp}-${via}`,
-          source: cp,
-          target: via,
-          style: { stroke: bg, strokeDasharray: '3,6', opacity: 0.5 },
           animated: false,
         })
       }

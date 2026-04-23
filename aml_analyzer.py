@@ -34,7 +34,7 @@ PAGE_SIZE = 500        # 每页拉取条数（Etherscan 最大支持 10000，但
 MAX_PAGES = 5          # 最多翻多少页（PAGE_SIZE × MAX_PAGES = 最大历史深度）
                        # 默认 5 页 × 500 = 2500 条，覆盖普通活跃地址的完整历史
                        # 对交易所热钱包等超活跃地址，依赖时间窗口（--days）截断
-HOP2_ENABLED = True    # 是否启用多跳分析（2-hop + 3-hop，较慢）
+HOP2_ENABLED = True    # 是否启用 2-hop 分析（较慢，快速模式下禁用）
 
 # 向后兼容
 MAX_TX_FETCH = PAGE_SIZE
@@ -54,7 +54,7 @@ CATEGORY_WEIGHTS: Dict[str, float] = {
 }
 
 # Hop 距离衰减（直接交互 1.0，二跳 0.3）
-HOP_DECAY: Dict[int, float] = {1: 1.0, 2: 0.3, 3: 0.1}
+HOP_DECAY: Dict[int, float] = {1: 1.0, 2: 0.3}
 
 # BRIDGE_REGISTRY / ALL_BRIDGE_ADDRS / OPAQUE_BRIDGE_ADDRS 从 threat_intel 导入
 
@@ -222,9 +222,15 @@ def load_blacklist(csv_path: str) -> Dict[str, Dict]:
 
 # ==================== 链类型判断 ====================
 def detect_chain(address: str, blacklist: Dict[str, Dict]) -> str:
+    # Tron 地址以 T 开头，Base58 编码，34位
+    if not address.startswith("0x"):
+        return "tron"
     addr_norm = normalize(address)
+    # 黑名单里有明确链记录时使用（避免多链同地址歧义）
     if addr_norm in blacklist:
-        return blacklist[addr_norm]["chain"]
+        chain = blacklist[addr_norm].get("chain", "")
+        if chain and chain in EVM_CHAIN_REGISTRY:
+            return chain
     return "ethereum"
 
 
@@ -408,12 +414,8 @@ class BridgeTracer:
                 dst_chains_hint: list) -> Optional[Dict]:
         if method == "layerzero_api":
             return self._resolve_layerzero(tx_hash, src_address)
-        elif method == "event_logs_rollup" and dst_chains_hint:
-            return {
-                "dst_chain": dst_chains_hint[0],
-                "dst_address": src_address,
-                "dst_tx": "",
-            }
+        # 其余 method（hop_api/cbridge_api/across_api 等）均未实现，返回 None
+        # bridges.json 中对应条目应标记 traceable=false，不会走到这里
         return None
 
     def _resolve_layerzero(self, tx_hash: str, src_address: str) -> Optional[Dict]:
@@ -520,6 +522,9 @@ class RiskReport:
 
     # 风险证据列表（评分的完整依据）
     indicators: List[RiskIndicator] = field(default_factory=list)
+
+    # 评分分解（可解释性）
+    score_breakdown: dict = field(default_factory=dict)
 
     # 展示用原始记录（不参与评分）
     top_counterparties: List[dict] = field(default_factory=list)
@@ -931,11 +936,10 @@ class AMLAnalyzer:
                 "chain": chain_name,
             })
 
-        # ── 2-hop / 3-hop 分析 ────────────────────────────────────────
-        # 2-hop：遍历目标地址的普通对手方（非已知协议地址），检测它们是否
-        #        直接与黑名单/混币器/不透明桥/高风险交易所交互。
-        # 3-hop：在 2-hop 中间节点的对手方里，再往外走一层，同样检测上述类别。
-        # 衰减：hop1=1.0, hop2=0.3, hop3=0.1（每多一跳，证据强度显著下降）
+        # ── 2-hop 分析 ───────────────────────────────────────────────
+        # 遍历目标地址的普通对手方（非已知协议地址），检测它们是否
+        # 直接与黑名单/混币器/不透明桥/高风险交易所交互。
+        # 衰减：hop1=1.0, hop2=0.3（每多一跳，证据强度显著下降）
         _protocol_excl = (set(self.blacklist) | ALL_BRIDGE_ADDRS
                           | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
 
@@ -985,42 +989,11 @@ class AMLAnalyzer:
             if hop2_nodes:
                 print(f"  [{chain_label}] 2-hop 分析 {len(hop2_nodes)} 个中间节点...")
 
-            hop3_nodes: List[tuple] = []  # (addr, via_cp)
-
             for cp in hop2_nodes:
                 time.sleep(REQUEST_DELAY)
                 cp_txs = client.get_normal_txs(cp, limit=50)
                 cp_tok = client.get_token_transfers(cp, limit=50)
                 _check_txs_for_risk(cp_txs + cp_tok, cp, hop=2, via1=cp)
-
-                # 收集 2-hop 对手方作为 3-hop 候选（排除协议地址和已知风险地址）
-                for tx in cp_txs + cp_tok:
-                    t2 = normalize(tx.get("to", "") or "")
-                    f2 = normalize(tx.get("from", "") or "")
-                    for n in [t2, f2]:
-                        if n and n != cp and n != addr_norm and n not in _protocol_excl:
-                            hop3_nodes.append((n, cp))
-
-            # 3-hop：从 2-hop 对手方再走一层，最多取 3 个节点
-            seen3: Set[str] = set()
-            hop3_sample = []
-            for addr3, via_cp in hop3_nodes:
-                # 额外过滤：确保 addr3 不是目标地址本身或已知协议合约
-                if addr3 in seen3 or addr3 == addr_norm or addr3 in _protocol_excl:
-                    continue
-                seen3.add(addr3)
-                hop3_sample.append((addr3, via_cp))
-                if len(hop3_sample) >= 3:
-                    break
-
-            if hop3_sample:
-                print(f"  [{chain_label}] 3-hop 分析 {len(hop3_sample)} 个节点...")
-            for addr3, via_cp in hop3_sample:
-                time.sleep(REQUEST_DELAY)
-                txs3 = client.get_normal_txs(addr3, limit=30)
-                tok3 = client.get_token_transfers(addr3, limit=30)
-                # via1=via_cp（2-hop中间节点），不传via2避免addr3混入路径显示
-                _check_txs_for_risk(txs3 + tok3, addr3, hop=3, via1=via_cp)
 
         # 将 risky_accum 中 hop>=2 的记录转为 RiskIndicator
         for (cp, risk_type, via), data in risky_accum.items():
@@ -1201,9 +1174,14 @@ class AMLAnalyzer:
         received_taint = min(received_taint, 1.0)
         sent_taint     = min(sent_taint, 1.0)
 
-        # 双向污染加成：若两侧都有污染，说明资金进出都涉及风险方，叠加惩罚
-        bilateral_bonus = min(received_taint, sent_taint) * 0.4
-        taint_ratio = min(max(received_taint, sent_taint) + bilateral_bonus, 1.0)
+        # ── 步骤1：基础污染比例（Haircut Model）──────────────────────────
+        # 取收入侧和转出侧的较高者作为主污染率
+        base_taint = max(received_taint, sent_taint)
+
+        # ── 步骤2：双向污染加成 ───────────────────────────────────────────
+        # 两侧都有污染 → 资金进出都经过风险方 → 该地址在洗钱链路中间
+        bilateral_bonus_raw = min(received_taint, sent_taint) * 0.4
+        taint_ratio = min(base_taint + bilateral_bonus_raw, 1.0)
 
         if total_flow == 0 and presence_only:
             taint_ratio = min(
@@ -1220,25 +1198,30 @@ class AMLAnalyzer:
         report.taint_ratio       = round(taint_ratio, 4)
         base_score = min(int(taint_ratio * 100), 100)
 
-        # 类别最低分保障：直接接触高危类别即使金额小也不应评为 LOW
-        # 逻辑：行为本身（用混币器、走不透明桥）是风险信号，与金额大小无关
+        # ── 步骤3：类别最低分保障（floor）────────────────────────────────
+        # 行为本身是风险信号，不论金额大小
         hop1_cats = {ind.category for ind in report.indicators if ind.hop == 1 and ind.amount_usdt > 0}
         hop2_cats = {ind.category for ind in report.indicators if ind.hop == 2 and ind.amount_usdt > 0}
-        hop3_cats = {ind.category for ind in report.indicators if ind.hop == 3 and ind.amount_usdt > 0}
+        pres1_cats = {ind.category for ind in presence_only if ind.hop == 1}
 
         floor = 0
-        if "blacklist"    in hop1_cats: floor = max(floor, 55)
-        if "mixer"        in hop1_cats: floor = max(floor, 50)
-        if "opaque_bridge" in hop1_cats: floor = max(floor, 35)
-        if "high_risk_exchange" in hop1_cats: floor = max(floor, 20)
-        if "blacklist"    in hop2_cats or "mixer" in hop2_cats: floor = max(floor, 20)
-        if "blacklist"    in hop3_cats or "mixer" in hop3_cats: floor = max(floor, 10)
+        floor_reason = ""
+        if "blacklist"         in hop1_cats: floor, floor_reason = max(floor, 55), "1-hop 直接收发黑名单 USDT"
+        if "mixer"             in hop1_cats: floor, floor_reason = max(floor, 50), "1-hop 直接使用混币器"
+        if "opaque_bridge"     in hop1_cats: floor, floor_reason = max(floor, 35), "1-hop 使用不透明桥"
+        if "high_risk_exchange" in hop1_cats: floor, floor_reason = max(floor, 20), "1-hop 高风险交易所"
+        if "blacklist" in hop2_cats or "mixer" in hop2_cats:
+            if floor < 20: floor, floor_reason = 20, "2-hop 间接关联黑名单/混币器"
+        if "blacklist" in pres1_cats or "mixer" in pres1_cats:
+            if floor < 15: floor, floor_reason = 15, "1-hop 关联黑名单/混币器（无USDT金额）"
 
-        # 多类别信号加分：同时命中多种风险类别说明资金路径复杂，主动洗钱概率更高
+        # ── 步骤4：多类别信号加分 ─────────────────────────────────────────
+        # 同时命中多种类别说明资金路径刻意设计（混币+桥+黑名单并用）
         all_hop1_cats = {ind.category for ind in report.indicators if ind.hop == 1}
         multi_cat_bonus = max(0, len(all_hop1_cats) - 1) * 5
 
-        report.risk_score = min(max(base_score, floor) + multi_cat_bonus, 100)
+        final_score = min(max(base_score, floor) + multi_cat_bonus, 100)
+        report.risk_score = final_score
 
         if report.risk_score >= 80:
             report.risk_level = "CRITICAL"
@@ -1248,6 +1231,20 @@ class AMLAnalyzer:
             report.risk_level = "MEDIUM"
         else:
             report.risk_level = "LOW"
+
+        # ── 评分分解（供报告展示）────────────────────────────────────────
+        report.score_breakdown = {
+            "received_taint_pct": round(received_taint * 100, 1),
+            "sent_taint_pct":     round(sent_taint * 100, 1),
+            "bilateral_bonus":    round(bilateral_bonus_raw * 100, 1),
+            "base_score":         base_score,
+            "floor":              floor,
+            "floor_reason":       floor_reason,
+            "multi_cat_bonus":    multi_cat_bonus,
+            "final_score":        final_score,
+            "hop1_categories":    sorted(all_hop1_cats),
+            "hop2_categories":    sorted(hop2_cats),
+        }
 
     # ---------- 主入口 ----------
     def analyze(self, address: str, chain: Optional[str] = None,
@@ -1389,9 +1386,29 @@ def print_report(report: RiskReport, use_color: bool = True):
     print()
     print(f"  {'─'*54}")
     print(f"  风险等级:   {lc}{report.risk_level}{rc}")
-    print(f"  风险分数:   {lc}{report.risk_score}/100{rc}  (污染比例 {report.taint_ratio*100:.2f}%)")
-    print(f"  收入侧暴露: {report.received_exposure*100:.2f}%  |  转出侧暴露: {report.sent_exposure*100:.2f}%")
+    print(f"  风险分数:   {lc}{report.risk_score}/100{rc}")
     print(f"  {'─'*54}")
+
+    # 评分分解（可解释性）
+    bd = report.score_breakdown
+    if bd:
+        print(f"  【评分分解】")
+        print(f"    收入侧污染:   {bd['received_taint_pct']:>5.1f}%  "
+              f"(收到来自风险地址的 USDT 占总流入的比例 × 类别权重)")
+        print(f"    转出侧污染:   {bd['sent_taint_pct']:>5.1f}%  "
+              f"(转入风险地址的 USDT 占总流出的比例 × 类别权重)")
+        if bd['bilateral_bonus'] > 0:
+            print(f"    双向加成:    +{bd['bilateral_bonus']:>5.1f}   "
+                  f"(进出两侧均有污染，叠加惩罚 min×0.4)")
+        print(f"    基础分:       {bd['base_score']:>5}   (污染比例 × 100)")
+        if bd['floor'] > bd['base_score']:
+            print(f"    类别下限:    >{bd['floor']:>4}   ({bd['floor_reason']})")
+        if bd['multi_cat_bonus'] > 0:
+            cats = ', '.join(bd['hop1_categories'])
+            print(f"    多类别加分:  +{bd['multi_cat_bonus']:>4}   "
+                  f"(1-hop 命中 {len(bd['hop1_categories'])} 类: {cats})")
+        print(f"    最终得分:     {lc}{bd['final_score']}/100{rc}")
+        print(f"  {'─'*54}")
 
     if report.is_blacklisted:
         print(f"\n  {lc}[!!!] 该地址已被 USDT 直接封禁{rc}")
@@ -1407,7 +1424,6 @@ def print_report(report: RiskReport, use_color: bool = True):
         sorted_inds = sorted(report.indicators, key=lambda x: (x.hop, -x.amount_usdt))
         hop1_inds = [i for i in sorted_inds if i.hop == 1 and i.amount_usdt > 0]
         hop2_inds = [i for i in sorted_inds if i.hop == 2 and i.amount_usdt > 0]
-        hop3_inds = [i for i in sorted_inds if i.hop == 3 and i.amount_usdt > 0]
         pres_inds = [i for i in sorted_inds if i.amount_usdt == 0]
 
         total_in  = report.total_inflow_usdt
@@ -1461,27 +1477,6 @@ def print_report(report: RiskReport, use_color: bool = True):
                       f"污染贡献 {contrib:.2f}%（×0.3衰减）")
                 print(f"      路径: {path}")
                 print(f"      中间节点: {ind.via_address}")
-                print(f"      风险终点: {ind.counterparty}")
-                if ind.tx_hashes:
-                    print(f"      证据tx:   {ind.tx_hashes[0][:20]}...")
-
-        if hop3_inds:
-            print(f"\n  {'─'*54}")
-            print(f"  3-Hop 风险证据（远端关联，衰减系数 0.1）")
-            print(f"  {'─'*54}")
-            for ind in hop3_inds:
-                basis   = total_in if ind.direction == "IN" else total_out
-                contrib = (ind.amount_usdt * ind.category_weight * 0.1 / basis * 100) if basis > 0 else 0
-                chain_tag = f"[{ind.chain}] " if ind.chain else ""
-                cp  = _short(ind.counterparty)
-                via = _short(ind.via_address) if ind.via_address else "?"
-                if ind.direction == "IN":
-                    path = f"{cp} --> {via} --> ... --> {x}"
-                else:
-                    path = f"{x} --> ... --> {via} --> {cp}"
-                print(f"    {chain_tag}[{ind.category}]  {ind.amount_usdt:>12,.2f} USDT  "
-                      f"污染贡献 {contrib:.2f}%（×0.1衰减）")
-                print(f"      路径: {path}")
                 print(f"      风险终点: {ind.counterparty}")
                 if ind.tx_hashes:
                     print(f"      证据tx:   {ind.tx_hashes[0][:20]}...")
