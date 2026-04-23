@@ -827,7 +827,10 @@ class AMLAnalyzer:
 
             for chk, chk_dir in [(to, "OUT" if frm == addr_norm else "IN"),
                                   (frm, "IN"  if frm != addr_norm else "OUT")]:
-                if chk in self.blacklist and chk != addr_norm:
+                if not chk or chk == addr_norm or chk in PROTOCOL_CONTRACTS:
+                    continue
+
+                if chk in self.blacklist:
                     _add_risk(chk, "blacklist", "blacklist",
                               CATEGORY_WEIGHTS["blacklist"], chk_dir, usdt_amt, tx_hash, ts)
 
@@ -947,7 +950,7 @@ class AMLAnalyzer:
                     other, d = f, "IN"
                 else:
                     continue
-                if other == addr_norm:
+                if not other or other == addr_norm or other in PROTOCOL_CONTRACTS:
                     continue
                 sym = tx.get("tokenSymbol", "").upper()
                 try:
@@ -1002,9 +1005,11 @@ class AMLAnalyzer:
             seen3: Set[str] = set()
             hop3_sample = []
             for addr3, via_cp in hop3_nodes:
-                if addr3 not in seen3:
-                    seen3.add(addr3)
-                    hop3_sample.append((addr3, via_cp))
+                # 额外过滤：确保 addr3 不是目标地址本身或已知协议合约
+                if addr3 in seen3 or addr3 == addr_norm or addr3 in _protocol_excl:
+                    continue
+                seen3.add(addr3)
+                hop3_sample.append((addr3, via_cp))
                 if len(hop3_sample) >= 3:
                     break
 
@@ -1014,11 +1019,14 @@ class AMLAnalyzer:
                 time.sleep(REQUEST_DELAY)
                 txs3 = client.get_normal_txs(addr3, limit=30)
                 tok3 = client.get_token_transfers(addr3, limit=30)
-                _check_txs_for_risk(txs3 + tok3, addr3, hop=3, via1=via_cp, via2=addr3)
+                # via1=via_cp（2-hop中间节点），不传via2避免addr3混入路径显示
+                _check_txs_for_risk(txs3 + tok3, addr3, hop=3, via1=via_cp)
 
         # 将 risky_accum 中 hop>=2 的记录转为 RiskIndicator
         for (cp, risk_type, via), data in risky_accum.items():
             if data["hop"] < 2:
+                continue
+            if cp == addr_norm:  # 不应出现，防御性过滤
                 continue
             hop_d = HOP_DECAY[data["hop"]]
             added = False
@@ -1193,8 +1201,9 @@ class AMLAnalyzer:
         received_taint = min(received_taint, 1.0)
         sent_taint     = min(sent_taint, 1.0)
 
-        # 最终污染比例：取两侧较高者（同一批资金不应叠加）
-        taint_ratio = max(received_taint, sent_taint)
+        # 双向污染加成：若两侧都有污染，说明资金进出都涉及风险方，叠加惩罚
+        bilateral_bonus = min(received_taint, sent_taint) * 0.4
+        taint_ratio = min(max(received_taint, sent_taint) + bilateral_bonus, 1.0)
 
         if total_flow == 0 and presence_only:
             taint_ratio = min(
@@ -1209,13 +1218,33 @@ class AMLAnalyzer:
         report.received_exposure = round(received_taint, 4)
         report.sent_exposure     = round(sent_taint, 4)
         report.taint_ratio       = round(taint_ratio, 4)
-        report.risk_score        = min(int(taint_ratio * 100), 100)
+        base_score = min(int(taint_ratio * 100), 100)
 
-        if report.risk_score >= 100:
+        # 类别最低分保障：直接接触高危类别即使金额小也不应评为 LOW
+        # 逻辑：行为本身（用混币器、走不透明桥）是风险信号，与金额大小无关
+        hop1_cats = {ind.category for ind in report.indicators if ind.hop == 1 and ind.amount_usdt > 0}
+        hop2_cats = {ind.category for ind in report.indicators if ind.hop == 2 and ind.amount_usdt > 0}
+        hop3_cats = {ind.category for ind in report.indicators if ind.hop == 3 and ind.amount_usdt > 0}
+
+        floor = 0
+        if "blacklist"    in hop1_cats: floor = max(floor, 55)
+        if "mixer"        in hop1_cats: floor = max(floor, 50)
+        if "opaque_bridge" in hop1_cats: floor = max(floor, 35)
+        if "high_risk_exchange" in hop1_cats: floor = max(floor, 20)
+        if "blacklist"    in hop2_cats or "mixer" in hop2_cats: floor = max(floor, 20)
+        if "blacklist"    in hop3_cats or "mixer" in hop3_cats: floor = max(floor, 10)
+
+        # 多类别信号加分：同时命中多种风险类别说明资金路径复杂，主动洗钱概率更高
+        all_hop1_cats = {ind.category for ind in report.indicators if ind.hop == 1}
+        multi_cat_bonus = max(0, len(all_hop1_cats) - 1) * 5
+
+        report.risk_score = min(max(base_score, floor) + multi_cat_bonus, 100)
+
+        if report.risk_score >= 80:
             report.risk_level = "CRITICAL"
-        elif report.risk_score >= 60:
+        elif report.risk_score >= 45:
             report.risk_level = "HIGH"
-        elif report.risk_score >= 30:
+        elif report.risk_score >= 20:
             report.risk_level = "MEDIUM"
         else:
             report.risk_level = "LOW"
@@ -1465,12 +1494,21 @@ def print_report(report: RiskReport, use_color: bool = True):
                 chain_tag = f"[{ind.chain}] " if ind.chain else ""
                 cp = _short(ind.counterparty)
                 if ind.hop == 1:
-                    path = f"{x} <-> {cp}  ({ind.direction})"
+                    path = (f"{cp} --> {x}" if ind.direction == "IN"
+                            else f"{x} --> {cp}" if ind.direction == "OUT"
+                            else f"{x} ↔ {cp}")
+                elif ind.hop == 2:
+                    via = _short(ind.via_address) if ind.via_address else "?"
+                    path = (f"{cp} --> {via} --> {x}" if ind.direction == "IN"
+                            else f"{x} --> {via} --> {cp}" if ind.direction == "OUT"
+                            else f"{x} ↔ {via} ↔ {cp}")
                 else:
                     via = _short(ind.via_address) if ind.via_address else "?"
-                    path = f"{x} <-> {via} <-> {cp}  ({ind.direction})"
+                    path = (f"{cp} --> {via} --> … --> {x}" if ind.direction == "IN"
+                            else f"{x} --> … --> {via} --> {cp}" if ind.direction == "OUT"
+                            else f"{x} ↔ … ↔ {via} ↔ {cp}")
                 note = f"  {ind.note}" if ind.note else ""
-                print(f"    {chain_tag}[{ind.hop}-hop][{ind.category}]  路径: {path}{note}")
+                print(f"    {chain_tag}[{ind.hop}-hop][{ind.category}]  {path}{note}")
 
     # ── 桥交互 ────────────────────────────────────────────────────────
     if report.bridge_interactions:
