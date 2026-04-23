@@ -53,8 +53,9 @@ CATEGORY_WEIGHTS: Dict[str, float] = {
     "transparent_bridge":         0.3,
 }
 
-# Hop 距离衰减（直接交互 1.0，二跳 0.3）
-HOP_DECAY: Dict[int, float] = {1: 1.0, 2: 0.3}
+# hop_decay 不再承担"距离惩罚"，统一为 1.0
+# 2-hop 的风险已通过 cp 的真实污染比例（taint_ratio）体现，不需要额外折扣
+HOP_DECAY: Dict[int, float] = {1: 1.0, 2: 1.0}
 
 # BRIDGE_REGISTRY / ALL_BRIDGE_ADDRS / OPAQUE_BRIDGE_ADDRS 从 threat_intel 导入
 
@@ -949,14 +950,22 @@ class AMLAnalyzer:
                           | set(MIXER_CONTRACTS) | set(HIGH_RISK_EXCHANGES) | KNOWN_DEX_ADDRS)
 
         def _score_cp_node(txs, cp_addr) -> Dict[str, tuple]:
-            """计算中间节点 cp 的风险评分。
-            返回 {direction: (category, node_score, risky_entity, tx_hash, ts)}
-            - direction: cp 与风险实体的交互方向（同时也是被分析地址的资金方向）
-            - node_score: cp 接触的最高类别权重，代表 cp 节点的危险程度
-            - risky_entity: cp 接触的具体风险地址（仅用于展示/溯源）
-            后续可在此函数内加入更多手法识别（peel chain、structuring 等）。
+            """计算 cp 的真实污染比例（taint_ratio）。
+
+            公式：taint_ratio = Σ(风险往来金额 × 类别权重) / cp 该方向 USDT 总流量
+
+            返回 {direction: (taint_ratio, best_category, best_risky_entity, tx_hash, ts)}
+            - taint_ratio: 0~1，cp 在该方向上有多少比例的资金与风险实体相关
+            - best_category: 权重最高的风险类别（用于展示和 floor 判断）
+            - best_risky_entity: 对应的风险地址（溯源证据）
+            后续可在此函数内加入洗钱手法识别（peel chain、structuring 等）。
             """
-            best: Dict[str, tuple] = {}  # direction -> (cat, score, risky_addr, hash, ts)
+            in_total  = 0.0   # cp 的 USDT 总流入（样本）
+            out_total = 0.0   # cp 的 USDT 总流出（样本）
+            in_risky_weighted  = 0.0  # Σ(risky_usdt × weight)，IN 方向
+            out_risky_weighted = 0.0  # Σ(risky_usdt × weight)，OUT 方向
+            best_in  = None   # (cat, weight, risky_addr, hash, ts)
+            best_out = None
 
             for tx in txs:
                 t = normalize(tx.get("to", "") or "")
@@ -970,26 +979,55 @@ class AMLAnalyzer:
                 if not other or other == addr_norm or other in PROTOCOL_CONTRACTS:
                     continue
 
+                sym = tx.get("tokenSymbol", "").upper()
+                try:
+                    dec = int(tx.get("tokenDecimal", "18") or "18")
+                    amt = int(tx.get("value", "0") or "0") / (10 ** dec)
+                except Exception:
+                    amt = 0.0
+                usdt = amt if "USDT" in sym else 0.0
+
                 h  = tx.get("hash", "")
                 ts = tx.get("timeStamp", "")
 
-                candidates = []
-                if other in self.blacklist:
-                    candidates.append(("blacklist",          CATEGORY_WEIGHTS["blacklist"],          other))
-                if other in MIXER_CONTRACTS:
-                    candidates.append(("mixer",              CATEGORY_WEIGHTS["mixer"],              other))
-                if other in OPAQUE_BRIDGE_ADDRS:
-                    candidates.append(("opaque_bridge",      CATEGORY_WEIGHTS["opaque_bridge"],      other))
-                if other in HIGH_RISK_EXCHANGES_FLAT:
-                    candidates.append(("high_risk_exchange", CATEGORY_WEIGHTS["high_risk_exchange"], other))
-                if other in ALL_BRIDGE_ADDRS and other not in OPAQUE_BRIDGE_ADDRS:
-                    candidates.append(("transparent_bridge", CATEGORY_WEIGHTS["transparent_bridge"], other))
+                # 累计 cp 的总 USDT 流量（分子分母都需要）
+                if d == "IN":
+                    in_total += usdt
+                else:
+                    out_total += usdt
 
-                for cat, score, risky_addr in candidates:
-                    if d not in best or score > best[d][1]:
-                        best[d] = (cat, score, risky_addr, h, ts)
+                # 识别 other 的风险类别（取最高权重）
+                risk_cat, risk_w = None, 0.0
+                if other in self.blacklist and CATEGORY_WEIGHTS["blacklist"] > risk_w:
+                    risk_cat, risk_w = "blacklist", CATEGORY_WEIGHTS["blacklist"]
+                if other in MIXER_CONTRACTS and CATEGORY_WEIGHTS["mixer"] > risk_w:
+                    risk_cat, risk_w = "mixer", CATEGORY_WEIGHTS["mixer"]
+                if other in OPAQUE_BRIDGE_ADDRS and CATEGORY_WEIGHTS["opaque_bridge"] > risk_w:
+                    risk_cat, risk_w = "opaque_bridge", CATEGORY_WEIGHTS["opaque_bridge"]
+                if other in HIGH_RISK_EXCHANGES_FLAT and CATEGORY_WEIGHTS["high_risk_exchange"] > risk_w:
+                    risk_cat, risk_w = "high_risk_exchange", CATEGORY_WEIGHTS["high_risk_exchange"]
+                if other in ALL_BRIDGE_ADDRS and other not in OPAQUE_BRIDGE_ADDRS \
+                        and CATEGORY_WEIGHTS["transparent_bridge"] > risk_w:
+                    risk_cat, risk_w = "transparent_bridge", CATEGORY_WEIGHTS["transparent_bridge"]
 
-            return best
+                if risk_cat:
+                    if d == "IN":
+                        in_risky_weighted += usdt * risk_w
+                        if best_in is None or risk_w > best_in[1]:
+                            best_in = (risk_cat, risk_w, other, h, ts)
+                    else:
+                        out_risky_weighted += usdt * risk_w
+                        if best_out is None or risk_w > best_out[1]:
+                            best_out = (risk_cat, risk_w, other, h, ts)
+
+            result: Dict[str, tuple] = {}
+            if best_in is not None:
+                taint = min(in_risky_weighted / in_total, 1.0) if in_total > 0 else 0.0
+                result["IN"] = (taint, best_in[0], best_in[2], best_in[3], best_in[4])
+            if best_out is not None:
+                taint = min(out_risky_weighted / out_total, 1.0) if out_total > 0 else 0.0
+                result["OUT"] = (taint, best_out[0], best_out[2], best_out[3], best_out[4])
+            return result
 
         if HOP2_ENABLED and counterparties:
             # 2-hop 中间节点：排除已知高风险地址（它们已在 1-hop 检测到）
@@ -1009,12 +1047,12 @@ class AMLAnalyzer:
                 # cp 是被评分的节点：counterparty=cp, via_address=cp 接触的风险实体
                 # 金额=被分析地址与 cp 的实际往来，权重=cp 节点风险评分
                 edge = cp_usdt_flow.get(cp, {})
-                for d, (cat, node_score, risky_entity, h, ts) in cp_risk.items():
+                for d, (taint_ratio, cat, risky_entity, h, ts) in cp_risk.items():
                     edge_amt = edge.get(d, 0.0)
                     report.indicators.append(RiskIndicator(
                         indicator_type=f"cp_node_{cat}",
                         category=cat,
-                        category_weight=node_score,
+                        category_weight=taint_ratio,  # cp 的真实污染比例，非类别权重常量
                         counterparty=cp,
                         direction=d,
                         amount_usdt=edge_amt,

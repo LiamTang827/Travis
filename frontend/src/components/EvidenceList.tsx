@@ -70,7 +70,7 @@ export default function EvidenceList({ report }: Props) {
             <div className="ev-header">
               <span className="ev-badge" style={{ background: color }}>{ind.hop}-hop · {label}</span>
               <span className="ev-chain">[{ind.chain}]</span>
-              <span className="ev-contrib">污染贡献 {contrib.toFixed(2)}%{ind.hop === 2 ? ' ×0.3' : ''}</span>
+              <span className="ev-contrib">污染贡献 {contrib.toFixed(2)}%</span>
             </div>
             <div className="ev-amount">${fmt(ind.amount_usdt)} USDT</div>
             <div className="ev-path">{path}</div>
