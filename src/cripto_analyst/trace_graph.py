@@ -24,20 +24,15 @@ from typing import Optional, List, Dict, Set
 from collections import deque
 
 # 复用 aml_analyzer 的配置和客户端
-try:
-    from . import aml_analyzer as _aml
-    from .aml_analyzer import (
-        AMLAnalyzer, EVMClient, TronScanClient, BridgeTracer,
-        RiskReport, load_blacklist,
-        BLACKLIST_CSV, EVM_CHAIN_REGISTRY, normalize,
-    )
-except ImportError:
-    import aml_analyzer as _aml
-    from aml_analyzer import (
-        AMLAnalyzer, EVMClient, TronScanClient, BridgeTracer,
-        RiskReport, load_blacklist,
-        BLACKLIST_CSV, EVM_CHAIN_REGISTRY, normalize,
-    )
+# 注意：运行时开关（BRIDGE_TRACE_ENABLED / HOP2_ENABLED）必须设置在 analyzer
+# 模块上才会生效——AMLAnalyzer 的方法读的是 analyzer 模块自己的全局变量。
+from . import analyzer as _aml
+from .analyzer import AMLAnalyzer
+from .chains import EVMClient, TronScanClient, EVM_CHAIN_REGISTRY
+from .bridge_tracer import BridgeTracer
+from .models import RiskReport
+from .utils import load_blacklist, normalize
+from .config import BLACKLIST_CSV, risk_level
 
 # ==================== 节点类型 ====================
 NODE_CLEAN          = "clean"           # 普通地址，无已知风险
@@ -449,10 +444,9 @@ LEVEL_COLORS = {
 
 
 def _score_to_level(score: int) -> str:
-    if score >= 80: return "CRITICAL"
-    if score >= 60: return "HIGH"
-    if score >= 30: return "MEDIUM"
-    return "LOW"
+    # 统一阈值来源：config.risk_level（≥80 CRITICAL / ≥45 HIGH / ≥20 MEDIUM）。
+    # 旧版此处自带一套 80/60/30，与评分引擎不一致，2026-06-11 重构时合并。
+    return risk_level(score)
 
 
 def print_tree(node: TraceNode, prefix: str = "", is_last: bool = True,

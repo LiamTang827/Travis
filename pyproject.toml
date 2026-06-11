@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cripto-analyst"
+version = "0.2.0"
+description = "Travis - evidence-first stablecoin AML tracing: proportional taint scoring + cross-chain bridge traceability"
+requires-python = ">=3.9"
+dependencies = [
+    "requests",
+    "python-dotenv",
+]
+
+[project.scripts]
+travis-analyze = "cripto_analyst.cli:main"
+travis-trace = "cripto_analyst.trace_graph:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"cripto_analyst.threat_intel" = ["*.json"]

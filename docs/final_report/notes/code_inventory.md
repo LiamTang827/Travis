@@ -43,6 +43,31 @@
 
 ## 已知不一致（保留行为，写作时处理）
 
-- **等级阈值两套**：aml_analyzer `_calculate_risk` 用 80/45/20，trace_graph `_score_to_level` 用 80/60/30。行为未改（重构不改行为），final report 写作前需统一或解释。
+- ~~**等级阈值两套**~~：✅ 已于 2026-06-11 架构重构中统一到 `config.risk_level`
+  （≥80 CRITICAL / ≥45 HIGH / ≥20 MEDIUM），评分引擎与树展示共用。
+  注意：trace_graph 的展示颜色边界从 60/30 变为 45/20（行为变更，已记录）。
 - **树级 ×0.6 与节点级比例公式哲学不统一**：R2 已定位 hop decay 为"距离描述符而非证据"，保持该口径；用 compare_propagation.py 跑对比实验作为 design-choice 支撑。
 - `compliance_engine/`：本次未触碰（AI 生成、待定 baseline 角色，见 merge_inventory.md）。
+
+## 架构重构（2026-06-11，第二轮）
+
+2888 行单体 `aml_analyzer.py` 按职责拆为 8 个模块（职责 → 文件）：
+
+```
+配置/权重/统一阈值   config.py        137 行
+链注册表/查询客户端  chains.py        391 行
+地址/黑名单工具      utils.py          91 行
+桥对端解析          bridge_tracer.py   73 行
+数据模型            models.py          92 行
+核心评分引擎        analyzer.py     1506 行
+报告输出            reporting.py     510 行
+CLI 入口            cli.py           165 行
+```
+
+- `aml_analyzer.py` 保留为**向后兼容转发层**：全仓旧 import 零修改继续工作。
+- 运行时开关陷阱已处理：trace_graph 改为直接 import `analyzer` 模块设置
+  BRIDGE_TRACE_ENABLED / HOP2_ENABLED（经 shim 设置不会生效，shim docstring 有警告）。
+- `pyproject.toml`：`pip install -e .` 即装，新命令 `travis-analyze` / `travis-trace`，
+  告别 PYTHONPATH=src hack；threat_intel JSON 注册表打包为 package-data。
+- 验证：10 模块独立可导入、旧路径全兼容、开关生效、14/14 测试通过、双 CLI 正常。
+- final report System Modeling 章节可直接引用此模块图（配置/数据/IO/引擎/展示分层）。

@@ -9,7 +9,7 @@ TRAceable Verification Intelligence System.
 ## 快速开始
 
 ```bash
-pip install requests python-dotenv
+pip install -e .        # 安装为本地包（含 requests / python-dotenv 依赖）
 cp .env.example .env
 ```
 
@@ -17,28 +17,38 @@ cp .env.example .env
 
 ```bash
 # 单链分析
-PYTHONPATH=src python3 -m cripto_analyst.aml_analyzer 0xYourAddress --chain ethereum
+travis-analyze 0xYourAddress --chain ethereum
 
 # 多链分析
-PYTHONPATH=src python3 -m cripto_analyst.aml_analyzer 0xYourAddress --chains ethereum,bsc,polygon
+travis-analyze 0xYourAddress --chains ethereum,bsc,polygon
 
 # 只看最近 90 天
-PYTHONPATH=src python3 -m cripto_analyst.aml_analyzer 0xYourAddress --chain ethereum --days 90
+travis-analyze 0xYourAddress --chain ethereum --days 90
 
 # 导出 JSON 报告
-PYTHONPATH=src python3 -m cripto_analyst.aml_analyzer 0xYourAddress --chain ethereum --json artifacts/reports/report.json
+travis-analyze 0xYourAddress --chain ethereum --json artifacts/reports/report.json
 
 # 深度资金图追踪
-PYTHONPATH=src python3 -m cripto_analyst.trace_graph 0xYourAddress --chain ethereum --depth 3
+travis-trace 0xYourAddress --chain ethereum --depth 3
 ```
+
+> 旧用法 `PYTHONPATH=src python3 -m cripto_analyst.aml_analyzer ...` 仍然兼容。
 
 ## 当前结构
 
 ```text
 .
-├── src/cripto_analyst/          # 核心 AML 引擎
-│   ├── aml_analyzer.py          # 单地址打分（比例 taint 模型）+ BridgeTracer 桥解析
-│   ├── trace_graph.py           # BFS 资金溯源树
+├── src/cripto_analyst/          # 核心 AML 引擎（pip install -e . 安装）
+│   ├── config.py                # 配置 / 风险类别权重 / 统一等级阈值
+│   ├── chains.py                # 链注册表 + EVM/Tron 查询客户端
+│   ├── utils.py                 # 地址归一化 / Base58 / 黑名单加载
+│   ├── bridge_tracer.py         # 跨链桥对端解析（协议索引器 + receipt 回锚）
+│   ├── models.py                # RiskIndicator / RiskReport 数据模型
+│   ├── analyzer.py              # AMLAnalyzer 核心引擎（比例 taint 评分）
+│   ├── reporting.py             # 终端报告 / JSON 导出
+│   ├── cli.py                   # travis-analyze 入口
+│   ├── trace_graph.py           # BFS 资金溯源树（travis-trace 入口）
+│   ├── aml_analyzer.py          # 向后兼容转发层（旧 import 全部可用）
 │   └── threat_intel/            # 黑名单/混币器/桥/交易所/OFAC 注册表
 ├── data/                        # 输入数据和测试地址
 │   ├── blacklists/
