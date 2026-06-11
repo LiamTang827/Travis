@@ -29,28 +29,15 @@ try:
     from .aml_analyzer import (
         AMLAnalyzer, EVMClient, TronScanClient, BridgeTracer,
         RiskReport, load_blacklist,
-        BLACKLIST_CSV, REQUEST_DELAY,
-        BRIDGE_REGISTRY, ALL_BRIDGE_ADDRS, OPAQUE_BRIDGE_ADDRS,
-        MIXER_CONTRACTS, CHAIN_SCANNERS, LZ_CHAIN_MAP,
-        HIGH_RISK_EXCHANGES, KNOWN_DEX_ADDRS,
-        EVM_CHAIN_REGISTRY, normalize,
+        BLACKLIST_CSV, EVM_CHAIN_REGISTRY, normalize,
     )
 except ImportError:
     import aml_analyzer as _aml
     from aml_analyzer import (
         AMLAnalyzer, EVMClient, TronScanClient, BridgeTracer,
         RiskReport, load_blacklist,
-        BLACKLIST_CSV, REQUEST_DELAY,
-        BRIDGE_REGISTRY, ALL_BRIDGE_ADDRS, OPAQUE_BRIDGE_ADDRS,
-        MIXER_CONTRACTS, CHAIN_SCANNERS, LZ_CHAIN_MAP,
-        HIGH_RISK_EXCHANGES, KNOWN_DEX_ADDRS,
-        EVM_CHAIN_REGISTRY, normalize,
+        BLACKLIST_CSV, EVM_CHAIN_REGISTRY, normalize,
     )
-# CEX 地址表从 feature_engineer 复用（aml_analyzer 没有统一的 CEX 集合）
-try:
-    from experiments.ml.feature_engineer import KNOWN_CEX_ADDRS
-except ImportError:
-    KNOWN_CEX_ADDRS: set = set()
 
 # ==================== 节点类型 ====================
 NODE_CLEAN          = "clean"           # 普通地址，无已知风险
@@ -78,28 +65,10 @@ NODE_RISK_WEIGHT = {
     NODE_CLEAN:           0,
 }
 
-# 旧版固定衰减系数（保留用于 --legacy 模式对比）
+# 树级传播的每跳衰减系数。注意：这是工程参数，不是从数据推导的；
+# 节点类型感知衰减、Möser Haircut 等替代策略的对比实验见
+# experiments/compare_propagation.py（propagate_current/haircut/improved）。
 DEPTH_DECAY = 0.6
-
-# 改进版：节点类型 → 风险传播率
-# 原理（Möser 2014, Liao 2025）：不同类型节点对 taint 的"传导能力"完全不同。
-# 混币器几乎 100% 传导（使用它就是为了隐匿），CEX 则近乎隔断（千万用户共用）。
-NODE_PROPAGATION_RATE = {
-    NODE_BLACKLISTED:   0.95,  # 风险源本身，几乎完全传导
-    NODE_MIXER:         0.85,  # 混币器：进入的资金几乎都是隐匿目的
-    NODE_OPAQUE_BRIDGE: 0.80,  # 不透明桥：资金流不可追踪，高风险
-    NODE_HIGH_RISK:     0.70,  # 综合高风险节点
-    NODE_SUSPECT:       0.50,  # 中转嫌疑：来源不明但本身未直接接触黑名单
-    NODE_BRIDGE_DST:    0.40,  # 透明桥目标：来源已知可追踪，不确定性低于中转
-    NODE_CLEAN:         0.30,  # 普通地址：低传导
-}
-
-# 已知实体类型覆盖（比 node_type 更精确）
-ENTITY_PROPAGATION_OVERRIDE = {
-    "cex":          0.05,  # CEX：日均千万笔交易，单一连接无统计意义
-    "dex":          0.15,  # DEX Router：公开协议，大量正常用户
-    "high_risk_ex": 0.60,  # 高风险交易所（Garantex 等）：KYC 不足，传导较高
-}
 
 
 # ==================== 数据结构 ====================

@@ -37,10 +37,9 @@ PYTHONPATH=src python3 -m cripto_analyst.trace_graph 0xYourAddress --chain ether
 ```text
 .
 ├── src/cripto_analyst/          # 核心 AML 引擎
-│   ├── aml_analyzer.py
-│   ├── trace_graph.py
-│   ├── cross_chain_tracer.py
-│   └── threat_intel/
+│   ├── aml_analyzer.py          # 单地址打分（比例 taint 模型）+ BridgeTracer 桥解析
+│   ├── trace_graph.py           # BFS 资金溯源树
+│   └── threat_intel/            # 黑名单/混币器/桥/交易所/OFAC 注册表
 ├── data/                        # 输入数据和测试地址
 │   ├── blacklists/
 │   ├── raw/

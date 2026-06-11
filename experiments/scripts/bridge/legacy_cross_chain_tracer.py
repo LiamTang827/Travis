@@ -1,11 +1,23 @@
 #!/usr/bin/env python3
 """
-跨链桥追踪模块 - 连接两条链上的同一实体
-核心问题：ETH 链上 Address A 调用桥 → Tron 链上 Address B 收款
-         如何证明 A == B 的控制者？
+[归档实验] 跨链桥 calldata/事件日志解析的早期尝试 — 未接入主流程
 
-方法：解析桥合约的事件日志，目标地址编码在 calldata 或 event 里
-支持桥：Stargate / Orbiter Finance / Across / Hop / Celer / Wormhole
+状态说明（2026-06-11 重构时归档，自 src/cripto_analyst/ 移入）：
+  - 本模块从未被 aml_analyzer / trace_graph 引用；生产中生效的桥解析
+    实现是 src/cripto_analyst/aml_analyzer.py 里的 BridgeTracer
+    （走协议索引器 API，如 LayerZero Scan）。
+  - 保留原因：事件签名表（topic0）和 calldata 解析思路，对 final report
+    的 Cross-Chain Resolution Workflow 章节以及"纯链上、无索引器"
+    解析路线仍有参考价值；bridge_event_scanner.py 的注释引用了这里的
+    StargateTracer / CelerTracer。
+  - 已知问题：CelerTracer 把 topics[2] 误读为 token
+    （见 bridge_event_scanner.py 第 226 行备注），使用前需修复。
+
+原始设计：
+  核心问题：ETH 链上 Address A 调用桥 → Tron 链上 Address B 收款，
+           如何证明 A == B 的控制者？
+  方法：解析桥合约的事件日志，目标地址编码在 calldata 或 event 里
+  覆盖桥：Stargate / Orbiter Finance / Across / Hop / Celer / Wormhole
 """
 
 import os
@@ -17,7 +29,7 @@ from pathlib import Path
 from typing import Optional, Dict, List
 from dotenv import load_dotenv
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(PROJECT_ROOT / ".env")
 
 ETHERSCAN_API_KEY = os.getenv("ETHERSCAN_API_KEY", "")
