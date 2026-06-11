@@ -11,18 +11,32 @@ __pycache__/
 # macOS
 .DS_Store
 
+# LaTeX build files
+*.aux
+*.bbl
+*.bcf
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.run.xml
+*.synctex.gz
+*.toc
+
 # 本地 Claude Code 配置
 .claude/
 
 # 个人文档（不入库）
 *.docx
 
-# 数据文件（体积较大，可按需取消注释上传）
-usdt_blacklist.csv
-#ml
-ml/data/
+# 数据和实验产物
+experiments/ml/data/
+artifacts/reports/*
+!artifacts/reports/.gitkeep
+artifacts/logs/*
+!artifacts/logs/.gitkeep
 .gstack/
 
 # Node.js
 node_modules/
-frontend/dist/

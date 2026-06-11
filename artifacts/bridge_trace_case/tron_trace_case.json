@@ -1,0 +1,44 @@
+{
+  "case_name": "Tron TRC-20 USDT trace case",
+  "generated_at_utc": "2026-06-01T17:19:26.719124+00:00",
+  "classification": "token-level TRC-20 evidence (no known bridge counterparty in this tx)",
+  "source_chain": "tron",
+  "source_transaction": "37e003f8caf7c751a1d1e120ca9cd0ac4ad815936c8707a0408c9b8904754646",
+  "source_explorer": "https://tronscan.org/#/transaction/37e003f8caf7c751a1d1e120ca9cd0ac4ad815936c8707a0408c9b8904754646",
+  "trc20_usdt_transfers": [
+    {
+      "icon_url": "https://static.tronscan.org/production/logo/usdtlogo.png",
+      "symbol": "USDT",
+      "level": "2",
+      "to_address": "TAJH8Y1aqqgfoAAezYeSQFxouuS1SS6PEU",
+      "tokenType2": "trc20",
+      "contract_address": "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
+      "type": "Transfer",
+      "decimals": 6,
+      "name": "Tether USD",
+      "vip": true,
+      "tokenType": "trc20",
+      "from_address": "TMjpUEpC1xUZTXVFF8zYdZH6MwCQy8xisU",
+      "amount_str": "138930000",
+      "status": 0
+    }
+  ],
+  "bridge_counterparty": null,
+  "destination_resolved": false,
+  "destination_note": "BTTC / Tron bridge destination resolution requires the bridge indexer; no public one-to-one source-to-destination mapping was resolved from the Tron transaction alone.",
+  "evidence_strength": {
+    "source_step": "trustless (Tron transaction info + TRC-20 transfer records)",
+    "bridge_step": "n/a (no bridge counterparty)",
+    "destination_step": "not reached"
+  },
+  "raw_transaction_info_keys": [
+    "id",
+    "fee",
+    "blockNumber",
+    "blockTimeStamp",
+    "contractResult",
+    "contract_address",
+    "receipt",
+    "log"
+  ]
+}

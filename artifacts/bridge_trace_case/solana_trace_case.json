@@ -1,0 +1,31 @@
+{
+  "case_name": "Solana cross-chain USDC trace attempt",
+  "generated_at_utc": "2026-06-01T17:18:46.353885+00:00",
+  "classification": "registry-only (Solana CCTP/Wormhole program identified)",
+  "source_chain": "solana",
+  "source_signature": "ZjwXLPkiEJb5D4Z9rWFdNL8U7f35PuvPicnjqLW2sfBch5CpgbmnidnfMyyG8WqAEdXNKhRmKhuJQ5WpGuzwgkE",
+  "source_explorer": "https://solscan.io/tx/ZjwXLPkiEJb5D4Z9rWFdNL8U7f35PuvPicnjqLW2sfBch5CpgbmnidnfMyyG8WqAEdXNKhRmKhuJQ5WpGuzwgkE",
+  "program_hits": [
+    {
+      "programId": "CCTPV2Sm4AdWt5296sk4P66VBZ7bEhcARwFaaS9YPbeC",
+      "name": "Circle CCTP V2 MessageTransmitter"
+    },
+    {
+      "programId": "CCTPV2vPZJS2u2BBsUoscuikbYjnpFmbFsvVuJdgUMQe",
+      "name": "Circle CCTP V2 TokenMessengerMinter"
+    }
+  ],
+  "instruction_names": [
+    "HandleReceiveUnfinalizedMessage",
+    "ReceiveMessage"
+  ],
+  "usdc_spl_touch": true,
+  "destination_resolved": false,
+  "note": "This completed Solana surface case observes a real CCTP/Wormhole-style transaction through public Solana RPC, records the invoked cross-chain program(s), instruction names, and SPL USDC token-balance touch. The counterparty chain is not inferred unless a message nonce/sequence and attestation/VAA are explicitly recovered; the unresolved hop is therefore recorded as an evidence boundary rather than a future-script placeholder.",
+  "evidence_strength": {
+    "source_step": "trustless (Solana RPC getTransaction + SPL token balances)",
+    "bridge_step": "not resolved (needs CCTP attestation / Wormhole VAA lookup)",
+    "destination_step": "not reached"
+  },
+  "tx_observed": true
+}

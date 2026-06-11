@@ -1,0 +1,15 @@
+[
+  {
+    "bridge": "Across Protocol v3",
+    "tx_hash": "0x024b2b3cfffddb12ef9b93da592f1ec754c457281b11be4e24324cd26359b3f5",
+    "block": 20600032,
+    "depositor": "0xcb9055fc2a8f0f27041dc238574100a22df0c15e",
+    "dst_chain_id": 42161,
+    "dst_address": "0xcb9055fc2a8f0f27041dc238574100a22df0c15e",
+    "input_token": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "output_token": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "input_amount": 40000012359,
+    "amount_display": "40000.01 USDC/USDT",
+    "dst_chain": "arbitrum"
+  }
+]
