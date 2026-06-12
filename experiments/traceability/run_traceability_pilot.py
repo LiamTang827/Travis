@@ -6,6 +6,16 @@ cached USDT/USDC transfer JSON files already present in experiments/ml/data
 and checks whether direct counterparties are known risk anchors or
 traceability boundary/continuation mechanisms.
 
+Scope note (2026-06-12): this pilot is DESCRIPTIVE, not statistical. It is
+a 1-hop set-membership check against the registry -- no BFS, no bridge
+resolution, no evidence chain. Its denominator is an address population
+(Tether-frozen + sampled normal seeds), so the traceability_continuation
+count reflects that population's bridge-usage base rate, not the system's
+tracing capability. Do NOT scale the seed count to chase statistical
+significance; statistical resolution rates over real bridge transactions
+belong to run_across_batch_resolution.py. Keep this script as-is: it is
+the generator of the report-2 pilot artifacts (illustrative cases only).
+
 Outputs:
   artifacts/traceability_pilot/direct_hits.csv
   artifacts/traceability_pilot/summary.md

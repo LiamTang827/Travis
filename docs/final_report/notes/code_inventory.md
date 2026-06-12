@@ -19,7 +19,7 @@
 | `run_stargate_bridge_trace_case.py` | R2 §Stargate trace | ✅ stargate_*（6/11 重跑过） |
 | `run_solana_bridge_trace_case.py` | R2 §Non-EVM Surfaces | ✅ solana_*（registry-only） |
 | `run_tron_bridge_trace_case.py` | R2 §Non-EVM Surfaces | ✅ tron_*（token-level） |
-| `run_traceability_pilot.py` | R2 pilot（150 seeds） | ✅ artifacts/traceability_pilot/ |
+| `run_traceability_pilot.py` | R2 pilot（150 seeds，**描述性**：1-hop 注册表匹配，非溯源统计；不扩样，final report 降级为示例小节） | ✅ artifacts/traceability_pilot/ |
 | `run_across_batch_resolution.py` | **final report 批量实验** | ⚠️ 产物缺失（bridge_batch_resolution/ 不存在）→ 待跑，Evaluation 弹药 #1 |
 | `run_multichain_surface_smoke.py` | 多链冒烟 | ⚠️ 产物缺失 → 待跑 |
 

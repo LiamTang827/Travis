@@ -27,8 +27,11 @@
    既是 "versus alternative choices"，又顺手解决双引擎定位问题（变 baseline）。
 3. **与 existing works 对比**：实现 Poison / Haircut（Möser et al.，已在引用列表）
    作为 baseline 与 taint 公式对比——满足 "comparing to existing works"。
-4. **扩大 pilot**：150 seeds → 500+，让 traceability_continuation 从 2 条变成
-   有统计意义的数字；按桥类别出统计表。
+4. ~~扩大 pilot：150 seeds → 500+~~ **❌ 已否决（2026-06-12）**：pilot 是
+   1-hop 注册表集合匹配（描述性实验），分母是"地址人群"而非"桥交易"；
+   continuation 条数由种子人群的桥使用率决定（Tether 冻结地址结构性偏低），
+   扩样本只会把错误的统计做得更精确。统计性主张全部交给批量解析（第 1 条）。
+   pilot 保持 150 seeds 原样，final report 中降级为动机/示例小节。
 5. **消融**：固定深度 vs 自适应深度 BFS（节点预算、误报对比）。
 6. 4 月 23 日 taint 重构的方法论重写（report 2 自称 proportional model 未实现，
    所以这部分写出来就是新内容）。
