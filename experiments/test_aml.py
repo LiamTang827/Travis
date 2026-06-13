@@ -323,6 +323,67 @@ def test_online(bl, analyzer):
 # ════════════════════════════════════════════════════════════
 # 主入口
 # ════════════════════════════════════════════════════════════
+# Layer 1-D — 机制统一定义层（混币器 + 桥的可追踪性判别）
+# ════════════════════════════════════════════════════════════
+
+def test_mechanism_definitions():
+    section("Layer 1-D：机制统一定义（is_tracing_boundary + 指纹判别）")
+    from cripto_analyst.threat_intel.mechanisms import (
+        classify, classify_by_fingerprint, REGISTRY, Kind, MappingSource,
+    )
+
+    # 1. 统一定义：映射不可还原 ⇔ 追踪边界
+    boundary_sources = {MappingSource.OFFCHAIN_PRIVATE, MappingSource.ZK_DESTROYED, MappingSource.NONE}
+    ok_def = all(
+        m.is_tracing_boundary == (m.mapping_source in boundary_sources)
+        for m in REGISTRY.values()
+    )
+    ok("is_tracing_boundary 与映射可观测性一致" if ok_def else "", "") if ok_def \
+        else fail("is_tracing_boundary 定义", "与 mapping_source 不一致")
+
+    # 2. 混币器与不透明桥归为同类边界（report 的核心命题）
+    mixers = [m for m in REGISTRY.values() if m.kind == Kind.MIXER]
+    opaque_bridges = [m for m in REGISTRY.values()
+                      if m.kind == Kind.BRIDGE and m.is_tracing_boundary]
+    if all(m.is_tracing_boundary for m in mixers) and opaque_bridges:
+        ok("混币器与不透明桥同为追踪边界",
+           f"{len(mixers)} 混币器 + {len(opaque_bridges)} 不透明桥")
+    else:
+        fail("统一边界命题", "混币器或不透明桥未被判为边界")
+
+    # 3. 透明桥不是边界（映射经索引器/Rollup 可还原）
+    transparent = [m for m in REGISTRY.values()
+                   if m.kind == Kind.BRIDGE and not m.is_tracing_boundary]
+    if transparent and all(not m.is_tracing_boundary for m in transparent):
+        ok("透明桥可追踪（非边界）", f"{len(transparent)} 个")
+    else:
+        fail("透明桥判别", "")
+
+    # 4. 第 0 级：地址精确命中（已知 Stargate Router）
+    m = classify("0x8731d54e9d02c286767d56ac03e8037c07e01e98")
+    if m and m.kind == Kind.BRIDGE and not m.is_tracing_boundary and not m.inferred:
+        ok("地址精确命中已知桥", m.name)
+    else:
+        fail("地址精确命中", f"得到 {m}")
+
+    # 5. 第 1 级：指纹认出未登记的 Tornado fork（字典做不到的事）
+    fork = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"  # 不在注册表
+    m = classify(fork, event_topics=[
+        "0xa945e51eec50ab98c161376f0db4cf2aeba3ec92755fe2fcd388bdbbb80ff196",  # Tornado Deposit
+    ])
+    if m and m.kind == Kind.MIXER and m.inferred and m.is_tracing_boundary:
+        ok("指纹认出未登记混币器部署", "inferred=True, boundary=True")
+    else:
+        fail("指纹判别（第 1 级）", f"得到 {m}")
+
+    # 6. 不误判：未知地址 + 无指纹 → 无判断
+    if classify("0x1111111111111111111111111111111111111111") is None:
+        ok("普通地址不误判", "classify → None")
+    else:
+        fail("误判普通地址", "")
+
+
+# ════════════════════════════════════════════════════════════
 
 def main():
     parser = argparse.ArgumentParser()
@@ -335,6 +396,7 @@ def main():
     bl       = test_blacklist_loading()
     analyzer = test_scoring_rules(bl)
     test_blacklist_coverage(bl)
+    test_mechanism_definitions()
 
     if args.online:
         test_online(bl, analyzer)

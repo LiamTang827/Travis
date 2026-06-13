@@ -36,9 +36,11 @@ TRANSFER_DIR = ROOT / "experiments/ml/data/transfers"
 LABELS_CSV = ROOT / "experiments/ml/data/labeled_addresses.csv"
 USDT_BLACKLIST_CSV = ROOT / "data/blacklists/usdt_blacklist.csv"
 OFAC_JSON = ROOT / "src/cripto_analyst/threat_intel/ofac_sanctioned.json"
-MIXERS_JSON = ROOT / "src/cripto_analyst/threat_intel/mixers.json"
-BRIDGES_JSON = ROOT / "src/cripto_analyst/threat_intel/bridges.json"
+MECHANISMS_JSON = ROOT / "src/cripto_analyst/threat_intel/mechanisms.json"
 OUT_DIR = ROOT / "artifacts/traceability_pilot"
+
+# 映射「可公开还原」的来源——其余视为追踪边界（与 mechanisms.py 保持一致）。
+_RECOVERABLE_MAPPING = {"onchain_event", "rollup_derivation", "indexer_api"}
 
 
 PROTOCOL_ADDRS = {
@@ -95,30 +97,27 @@ def load_registry() -> dict[str, dict[str, str]]:
                     },
                 )
 
-    if MIXERS_JSON.exists():
-        mixers = load_json(MIXERS_JSON).get("contracts", {})
-        for address, name in mixers.items():
-            address = norm(address)
-            if address in PROTOCOL_ADDRS or "placeholder" in str(name).lower():
-                continue
-            registry[address] = {
-                "category": "traceability_break",
-                "kind": f"Mixer/privacy tool: {name}",
-                "traceability": "break",
-            }
-
-    if BRIDGES_JSON.exists():
-        bridges = load_json(BRIDGES_JSON).get("contracts", {})
-        for address, meta in bridges.items():
+    if MECHANISMS_JSON.exists():
+        mechanisms = load_json(MECHANISMS_JSON).get("mechanisms", {})
+        for address, meta in mechanisms.items():
             address = norm(address)
             if not address or address in PROTOCOL_ADDRS:
                 continue
-            traceable = bool(meta.get("traceable"))
-            registry[address] = {
-                "category": "traceability_continuation" if traceable else "traceability_break",
-                "kind": f"{'Traceable' if traceable else 'Opaque'} bridge: {meta.get('name', 'bridge')}",
-                "traceability": "continue" if traceable else "break",
-            }
+            name = meta.get("name", "mechanism")
+            # 统一判据：映射可还原 ⇒ 可追踪（continue）；否则为追踪边界（break）
+            traceable = meta.get("mapping_source") in _RECOVERABLE_MAPPING
+            if meta.get("kind") == "mixer":
+                registry[address] = {
+                    "category": "traceability_break",
+                    "kind": f"Mixer/privacy tool: {name}",
+                    "traceability": "break",
+                }
+            else:
+                registry[address] = {
+                    "category": "traceability_continuation" if traceable else "traceability_break",
+                    "kind": f"{'Traceable' if traceable else 'Opaque'} bridge: {name}",
+                    "traceability": "continue" if traceable else "break",
+                }
 
     return registry
 

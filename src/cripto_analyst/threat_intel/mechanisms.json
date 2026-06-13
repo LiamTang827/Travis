@@ -1,0 +1,497 @@
+{
+  "_comment": "统一资金转移机制注册表。单一事实来源，替代旧 mixers.json + bridges.json。核心定义：mapping_source ∈ {offchain_private, zk_destroyed, none} ⇒ 追踪边界（is_tracing_boundary）。混币器与不透明桥是该定义下的同类实例，区别仅在映射不可还原的方式。字段见 mechanisms.py。",
+  "mechanisms": {
+    "0x47ce0c6ed5b0ce3d3a51fdb1c52dc66a7c3c2936": {
+      "name": "Tornado Cash 0.1 ETH",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x910cbd523d972eb0a6f4cae4618ad62622b39dbf": {
+      "name": "Tornado Cash 1 ETH",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xa160cdab225685da1d56aa342ad8841c3b53f291": {
+      "name": "Tornado Cash 10 ETH",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xd4b88df4d29f5cedd6857912842cff3b20c8cfa3": {
+      "name": "Tornado Cash 100 ETH",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xfd8610d20aa15b7b2e3be39b396a1bc3516c7144": {
+      "name": "Tornado Cash 1000 ETH",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x07687e702b410fa43f4cb4af7fa097918ffd2730": {
+      "name": "Tornado Cash USDC 10k",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x23773e65ed146a459667fd7b0fc7ebcddbebf32": {
+      "name": "Tornado Cash DAI 1k",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x12d66f87a04a9e220c9d50f0a8c1f856591900aa": {
+      "name": "Tornado Cash DAI 100",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xaf4c0b70b2ea9fb7487c7cbb37ada259579fe040": {
+      "name": "Tornado Cash DAI 10k",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xd96f2b1c14db8458374d9aca76e26c3950113464": {
+      "name": "Tornado Cash DAI 100k",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b": {
+      "name": "Tornado Cash Router",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x905b63fff465b9ffbf41dea908ceb12478ec7601": {
+      "name": "Tornado Cash Proxy",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xd691f27f38b395b1b196747234ba8e57c9162cf5": {
+      "name": "eXch",
+      "kind": "mixer",
+      "mechanism": "centralized_swap",
+      "mapping_source": "offchain_private",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0xfa7093cdd9ee6932b4eb2c9e1cde7ce00b1fa4b5": {
+      "name": "Railgun Smart Wallet",
+      "kind": "mixer",
+      "mechanism": "zk_pool",
+      "mapping_source": "zk_destroyed",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x8731d54e9d02c286767d56ac03e8037c07e01e98": {
+      "name": "Stargate Router (ETH)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": [
+        "arbitrum",
+        "optimism",
+        "polygon",
+        "bsc",
+        "avalanche"
+      ]
+    },
+    "0x296f55f8fb28e498b858d0bcda06d955b2cb3f97": {
+      "name": "Stargate STG (ETH)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": []
+    },
+    "0x45a01e4e04f14f7a4a6702c74187c5f6222033cd": {
+      "name": "Stargate Router (BSC)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": [
+        "ethereum",
+        "arbitrum",
+        "optimism",
+        "polygon",
+        "avalanche"
+      ]
+    },
+    "0x53bf833a5d6c4dda888f69c22c88c9f356a41614": {
+      "name": "Stargate Router (Arbitrum)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": [
+        "ethereum",
+        "optimism",
+        "polygon",
+        "bsc",
+        "avalanche"
+      ]
+    },
+    "0xb0d502e938ed5f4df2e681fe6e419ff29631d62b": {
+      "name": "Stargate Router (Optimism)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": [
+        "ethereum",
+        "arbitrum",
+        "polygon",
+        "bsc",
+        "avalanche"
+      ]
+    },
+    "0x66a71dcef29a0ffbdbe3c6a460a3b5bc225cd675": {
+      "name": "LayerZero Endpoint v1 (ETH)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": []
+    },
+    "0x1a44076050125825900e736c501f859c50fe728c": {
+      "name": "LayerZero Endpoint v2 (ETH/BSC)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": []
+    },
+    "0x3c2269811836af69497e5f486a85d7316753cf62": {
+      "name": "LayerZero Endpoint v1 (BSC)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "layerzero_api",
+      "dst_chains": []
+    },
+    "0x3e4a3a4796d16c0cd582c382691998f7c06420b6": {
+      "name": "Hop Protocol USDT (ETH)",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "hop_api",
+      "dst_chains": [
+        "arbitrum",
+        "optimism",
+        "polygon",
+        "gnosis"
+      ]
+    },
+    "0x3666f603cc164936c1b87e207f36beba4ac5f18a": {
+      "name": "Hop Protocol USDC (ETH)",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "hop_api",
+      "dst_chains": [
+        "arbitrum",
+        "optimism",
+        "polygon"
+      ]
+    },
+    "0xb8901acb165ed027e32754e0ffe830802919727f": {
+      "name": "Hop Protocol ETH Bridge",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "hop_api",
+      "dst_chains": [
+        "arbitrum",
+        "optimism"
+      ]
+    },
+    "0x914f986a44acb623a277d6bd17368171fcbe4273": {
+      "name": "Hop Protocol USDC Bridge",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "hop_api",
+      "dst_chains": [
+        "arbitrum",
+        "optimism"
+      ]
+    },
+    "0x5427fefa711eff984124bfbb1ab6fbf5e3da1820": {
+      "name": "Celer cBridge v2",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "cbridge_api",
+      "dst_chains": []
+    },
+    "0x9d39fc627a6d9d9f8c831c16995b209548cc3401": {
+      "name": "Celer cBridge v1",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "cbridge_api",
+      "dst_chains": []
+    },
+    "0x4d9079bb4165aeb4084c526a32695dcfd2f77381": {
+      "name": "Across Protocol v2",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "across_api",
+      "dst_chains": []
+    },
+    "0x5c7bcd6e7de5423a257d81b442095a1a6ced35c5": {
+      "name": "Across Protocol v3",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "across_api",
+      "dst_chains": []
+    },
+    "0x3ee18b2214aff97000d974cf647e7c347e8fa585": {
+      "name": "Wormhole Token Bridge",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "wormhole_api",
+      "dst_chains": []
+    },
+    "0x98f3c9e6e3face36baad05fe09d375ef1464288b": {
+      "name": "Wormhole Core Bridge",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "wormhole_api",
+      "dst_chains": []
+    },
+    "0x43de2d77bf8027e25dbd179b491e8d64f38398aa": {
+      "name": "deBridge Gate",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "debridge_api",
+      "dst_chains": []
+    },
+    "0xce16f69375520ab01377ce7b88f5ba8c48f8d666": {
+      "name": "SquidRouter v1 (Axelar)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "axelar_api",
+      "dst_chains": []
+    },
+    "0xea749fd6ba492dbc14c24fe8a3d08769229b896c": {
+      "name": "SquidRouter v2 (Axelar)",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "axelar_api",
+      "dst_chains": []
+    },
+    "0x8898b472c54c31894e3b9bb83cea802a5d0e63c6": {
+      "name": "Connext Diamond",
+      "kind": "bridge",
+      "mechanism": "message_passing",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "connext_api",
+      "dst_chains": []
+    },
+    "0xb8f275fbf7a959f4bce59999a2ef122a099e81a8": {
+      "name": "Symbiosis",
+      "kind": "bridge",
+      "mechanism": "liquidity_fill",
+      "mapping_source": "indexer_api",
+      "evidence_strength": "moderate",
+      "resolution_method": "symbiosis_api",
+      "dst_chains": []
+    },
+    "0xa0c68c638235ee32657e8f720a23cec1bfc77c77": {
+      "name": "Polygon PoS Bridge (ETH side)",
+      "kind": "bridge",
+      "mechanism": "rollup_canonical",
+      "mapping_source": "rollup_derivation",
+      "evidence_strength": "strong",
+      "resolution_method": "event_logs_rollup",
+      "dst_chains": [
+        "polygon"
+      ]
+    },
+    "0x40ec5b33f54e0e8a33a975908c5ba1c14e5bbbdf": {
+      "name": "Polygon ERC20 Predicate (ETH side)",
+      "kind": "bridge",
+      "mechanism": "rollup_canonical",
+      "mapping_source": "rollup_derivation",
+      "evidence_strength": "strong",
+      "resolution_method": "event_logs_rollup",
+      "dst_chains": [
+        "polygon"
+      ]
+    },
+    "0x8315177ab297ba92a06054ce80a67ed4dbd7ed3a": {
+      "name": "Arbitrum Bridge (ETH side)",
+      "kind": "bridge",
+      "mechanism": "rollup_canonical",
+      "mapping_source": "rollup_derivation",
+      "evidence_strength": "strong",
+      "resolution_method": "event_logs_rollup",
+      "dst_chains": [
+        "arbitrum"
+      ]
+    },
+    "0x4dbd4fc535ac27206064b68ffcf827b0a60bab3f": {
+      "name": "Arbitrum Inbox (ETH side)",
+      "kind": "bridge",
+      "mechanism": "rollup_canonical",
+      "mapping_source": "rollup_derivation",
+      "evidence_strength": "strong",
+      "resolution_method": "event_logs_rollup",
+      "dst_chains": [
+        "arbitrum"
+      ]
+    },
+    "0x99c9fc46f92e8a1c0dec1b1747d010903e884be1": {
+      "name": "Optimism Gateway (ETH side)",
+      "kind": "bridge",
+      "mechanism": "rollup_canonical",
+      "mapping_source": "rollup_derivation",
+      "evidence_strength": "strong",
+      "resolution_method": "event_logs_rollup",
+      "dst_chains": [
+        "optimism"
+      ]
+    },
+    "0x25ace71c97b33cc4729cf772ae268934f7ab5fa1": {
+      "name": "Optimism Messenger (ETH side)",
+      "kind": "bridge",
+      "mechanism": "rollup_canonical",
+      "mapping_source": "rollup_derivation",
+      "evidence_strength": "strong",
+      "resolution_method": "event_logs_rollup",
+      "dst_chains": [
+        "optimism"
+      ]
+    },
+    "0xc564ee9f21ed8a2d8e7e76c085740d5e4c5fafbe": {
+      "name": "Multichain Router v4",
+      "kind": "bridge",
+      "mechanism": "mpc_custody",
+      "mapping_source": "offchain_private",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x765277eebeca2e31912c9946eae1021199b39c61": {
+      "name": "Multichain Router v6",
+      "kind": "bridge",
+      "mechanism": "mpc_custody",
+      "mapping_source": "offchain_private",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x80c67432656d59144ceff962e8faf8926599bcf8": {
+      "name": "Orbiter Finance",
+      "kind": "bridge",
+      "mechanism": "maker_fill",
+      "mapping_source": "offchain_private",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x2796317b0ff8538f253012862c06787adfb8ceb": {
+      "name": "Synapse Bridge",
+      "kind": "bridge",
+      "mechanism": "pooled_fill",
+      "mapping_source": "offchain_private",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x1116898dda4015ed8ddefb84b6e8bc24528af2d8": {
+      "name": "Synapse Router",
+      "kind": "bridge",
+      "mechanism": "pooled_fill",
+      "mapping_source": "offchain_private",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    },
+    "0x5474f9c8f4a2c8a8e14de5c785c0b9d3e5b18d6d": {
+      "name": "Owlto Finance",
+      "kind": "bridge",
+      "mechanism": "maker_fill",
+      "mapping_source": "offchain_private",
+      "evidence_strength": "none",
+      "resolution_method": null,
+      "dst_chains": []
+    }
+  }
+}

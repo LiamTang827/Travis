@@ -17,8 +17,9 @@ class BridgeTracer:
                 dst_chains_hint: list) -> Optional[Dict]:
         if method == "layerzero_api":
             return self._resolve_layerzero(tx_hash, src_address)
-        # 其余 method（hop_api/cbridge_api/across_api 等）均未实现，返回 None
-        # bridges.json 中对应条目应标记 traceable=false，不会走到这里
+        # 其余 method（hop_api/cbridge_api/across_api 等）均未实现，返回 None。
+        # 这些机制在 mechanisms.json 中 mapping_source=indexer_api（仍属可追踪），
+        # 只是 resolution_method 尚未接入；未解析时上层按"无对端"处理。
         return None
 
     def _resolve_layerzero(self, tx_hash: str, src_address: str) -> Optional[Dict]:

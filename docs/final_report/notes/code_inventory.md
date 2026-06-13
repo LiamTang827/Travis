@@ -9,7 +9,8 @@
 |---|---|---|---|
 | `aml_analyzer.py` | ★★★ 核心 | 可跑，14 项离线测试全过 | R1 Risk Scoring（已按 4/23 比例 taint 公式演化）+ R2 Bridge Registry / Cross-Chain Resolution（内置 BridgeTracer） |
 | `trace_graph.py` | ★★★ 核心 | 可跑；树级传播仍为 ×0.6 工程参数（已如实注释） | R1 BFS / 自适应深度 / 中转识别 + R2 Adaptive-Depth BFS and Hop Decay |
-| `threat_intel/` | ★★★ 核心数据 | bridges/mixers/exchanges/OFAC 注册表齐全 | R2 Bridge Registry and Evidence-Based Classification |
+| `threat_intel/mechanisms.py` + `mechanisms.json` | ★★★ 核心定义层 | 统一定义 + 两级判别器，6 项测试 | R2 Bridge Registry：把散落三表的"映射可观测性"提升为可执行定义 |
+| `threat_intel/` 其余 | ★★★ 核心数据 | exchanges/OFAC 注册表 | 外部标签源 |
 
 ## 第二层：6 月跨链桥实验（experiments/traceability/）— report 2 证据生成器
 
@@ -40,6 +41,27 @@
    零 import 引用的孤儿模块；生效的桥解析是 aml_analyzer 内的 BridgeTracer。docstring 已写明归档状态 + CelerTracer 已知 bug；`PROJECT_ROOT` 改为 parents[3]。
 2. **trace_graph.py 删死代码**：`NODE_PROPAGATION_RATE` / `ENTITY_PROPAGATION_OVERRIDE`（写了从未用，思想已在 compare_propagation.py 实现）+ 10 个死 import + 对 experiments.ml 的反向依赖 + `--legacy` 假注释（CLI 无此参数）。DEPTH_DECAY 注释改为如实描述（工程参数，对比实验见 compare_propagation.py）。
 3. **test_aml.py 修复 + 重写**：裸 import → 包 import；`EtherscanClient(KEY)` → `EVMClient(ChainConfig)` 多链 dict 签名；Layer 1-B 六个旧模型断言（40/25/35/10 分魔法数）重写为比例模型测试；测试 9 原来自测自（本地重新实现阈值逻辑），改为断言 `_calculate_risk` 真实输出（≥80/≥45/≥20）。
+
+## 机制统一定义层（2026-06-14，第三轮重构）
+
+把 report 2 散落在三张表里的同一性质（"进出映射不可还原"）提升为**可执行定义**，
+回答"不是只弄 JSON"：
+
+- **数据层** `mechanisms.json`：合并旧 `mixers.json` + `bridges.json` 为单一事实来源，
+  49 条，统一 schema（kind / mechanism / mapping_source / evidence_strength / resolution_method）。
+- **定义层** `mechanisms.py`：`MappingSource` 枚举 + `Mechanism` 数据类 +
+  **核心谓词 `is_tracing_boundary`**（mapping 不可还原 ⇔ 追踪边界，把混币器与不透明桥
+  归为同类实例）。
+- **判别器**：`classify()` 两级——第 0 级地址精确查（零误判）→ 第 1 级协议指纹
+  （`classify_by_fingerprint`，用 keccak256 离线验证的 Tornado 选择器/事件 topic0，
+  能认出**未登记的同协议部署**——这是字典做不到的）。
+- 旧常量 MIXER_CONTRACTS / BRIDGE_REGISTRY / OPAQUE_BRIDGE_ADDRS 全部从统一注册表
+  **派生**，与旧值逐字节一致（14/35/6），调用方零改动；旧两个 JSON 已删。
+- 测试：test_aml.py 新增 Layer 1-D 六项（定义自洽、统一边界命题、两级判别、不误判），
+  全套 20 项通过。
+- 报告对应：这就是把 "Bridge Registry" 一节从"按身份查表"提升到"按映射可观测性定义"
+  的代码实现；`is_tracing_boundary` 谓词 = report 里那个统一定义的可执行形式。
+- 仍是 Future Work：第 2 级行为/统计判别（认出全新协议，非已知协议的新部署）。
 
 ## 已知不一致（保留行为，写作时处理）
 
