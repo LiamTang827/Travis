@@ -38,6 +38,10 @@ artifacts/logs/*
 !artifacts/logs/.gitkeep
 .gstack/
 
+# 本地研究数据：不入公开仓库（部署不需要；含研究钱包地址）
+data/wallets/
+data/raw/
+
 # Node.js
 node_modules/
 
