@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+pydantic
+pymongo
+requests
+python-dotenv
+# 引擎本体：部署时 `pip install -e ../..`（或发布后用包名）
