@@ -207,15 +207,23 @@ def print_report(report: RiskReport, use_color: bool = True, output_dir: str = "
     print(f"  风险分数:   {lc}{report.risk_score}/100{rc}")
     print(f"  {'─'*54}")
 
-    # 评分分解（可解释性）
+    # 评分分解（可解释性）。两种依据：list_based（名单命中）/ flow_based（资金流污染）
     bd = report.score_breakdown
     if bd:
         print(f"  【评分分解】")
-        print(f"    收入侧污染:   {bd['received_taint_pct']:>6.2f}%  "
-              f"(收到来自风险地址的稳定币占总流入的比例 × 类别权重)")
-        print(f"    转出侧污染:   {bd['sent_taint_pct']:>6.2f}%  "
-              f"(转入风险地址的稳定币占总流出的比例 × 类别权重)")
-        print(f"    最终得分:     {lc}{bd['final_score']}/100{rc}")
+        if bd.get("basis") == "list_based":
+            print(f"    依据:         名单命中（list-based，确定性，与资金流无关）")
+            if bd.get("usdt_blacklist_time"):
+                print(f"    USDT 黑名单:   {bd['usdt_blacklist_time']}")
+            if bd.get("ofac_sdn_entity"):
+                print(f"    OFAC SDN:     {bd['ofac_sdn_entity']}")
+            print(f"    最终得分:     {lc}{bd.get('direct_blacklist_match', 100)}/100{rc}")
+        else:
+            print(f"    收入侧污染:   {bd.get('received_taint_pct', 0):>6.2f}%  "
+                  f"(收到来自风险地址的稳定币占总流入的比例 × 类别权重)")
+            print(f"    转出侧污染:   {bd.get('sent_taint_pct', 0):>6.2f}%  "
+                  f"(转入风险地址的稳定币占总流出的比例 × 类别权重)")
+            print(f"    最终得分:     {lc}{bd.get('final_score', report.risk_score)}/100{rc}")
         print(f"  {'─'*54}")
 
     if report.is_blacklisted:
