@@ -1,10 +1,10 @@
 import type { RiskReport } from '../types'
 
 const LEVEL_COLOR: Record<string, string> = {
-  LOW: '#22c55e',
-  MEDIUM: '#f59e0b',
-  HIGH: '#ef4444',
-  CRITICAL: '#a855f7',
+  LOW: '#1f8a5b',
+  MEDIUM: '#d97706',
+  HIGH: '#dc2626',
+  CRITICAL: '#7f1d1d',
 }
 
 function fmt(n: number) {
@@ -22,9 +22,15 @@ export default function RiskDashboard({ report }: Props) {
       <div className="card card-score" style={{ borderColor: color }}>
         <div className="score-num" style={{ color }}>{report.risk_score}</div>
         <div className="score-label" style={{ color }}>{report.risk_level}</div>
-        <div className="score-sub">污染比例 {(report.taint_ratio * 100).toFixed(2)}%</div>
+        <div className="score-sub">
+          {report.risk_basis === 'list_based'
+            ? '名单命中（确定性）'
+            : `污染比例 ${(report.taint_ratio * 100).toFixed(2)}%`}
+        </div>
         {report.is_blacklisted && (
-          <div className="badge-blacklist">直接命中黑名单</div>
+          <div className="badge-blacklist">
+            {report.ofac_sdn_match ? 'OFAC 制裁 / 黑名单' : '直接命中黑名单'}
+          </div>
         )}
       </div>
 

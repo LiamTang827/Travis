@@ -20,8 +20,13 @@ export interface RiskReport {
   tron_address: string
   is_blacklisted: boolean
   blacklist_time: string
+  usdt_blacklist_time: string
+  ofac_sdn_match: boolean
+  ofac_entity: string
   risk_score: number
   risk_level: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL'
+  risk_basis: 'list_based' | 'flow_based'
+  score_breakdown: Record<string, any>
   taint_ratio: number
   received_exposure: number
   sent_exposure: number

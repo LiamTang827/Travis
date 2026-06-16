@@ -7,20 +7,20 @@ import '@xyflow/react/dist/style.css'
 import type { RiskReport } from '../types'
 
 const CATEGORY_COLOR: Record<string, string> = {
-  blacklist:       '#ef4444',
+  blacklist:       '#dc2626',
   ofac_sanctioned: '#7f1d1d',
-  mixer:           '#f97316',
-  opaque_bridge:   '#f59e0b',
-  high_risk_exchange: '#eab308',
-  transparent_bridge_with_bl: '#84cc16',
-  transparent_bridge: '#22c55e',
+  mixer:           '#d97706',
+  opaque_bridge:   '#b45309',
+  high_risk_exchange: '#a16207',
+  transparent_bridge_with_bl: '#65a30d',
+  transparent_bridge: '#1f8a5b',
 }
 
 const LEVEL_COLOR: Record<string, string> = {
-  LOW:      '#22c55e',
-  MEDIUM:   '#f59e0b',
-  HIGH:     '#ef4444',
-  CRITICAL: '#a855f7',
+  LOW:      '#1f8a5b',
+  MEDIUM:   '#d97706',
+  HIGH:     '#dc2626',
+  CRITICAL: '#7f1d1d',
 }
 
 function short(addr: string) {
@@ -87,8 +87,8 @@ export default function TraceGraph({ report }: Props) {
         label: `$${amt}`,
         animated: true,
         style: { stroke: bg },
-        labelStyle: { fill: '#e2e8f0', fontSize: 10 },
-        labelBgStyle: { fill: '#1e293b' },
+        labelStyle: { fill: '#3d4758', fontSize: 10 },
+        labelBgStyle: { fill: '#f2f5f9' },
       })
     })
 
@@ -138,7 +138,7 @@ export default function TraceGraph({ report }: Props) {
         nodes={nodes}
         edges={edges}
         fitView
-        colorMode="dark"
+        colorMode="light"
         proOptions={{ hideAttribution: true }}
       >
         <Background />

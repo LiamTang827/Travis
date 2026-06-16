@@ -1,7 +1,14 @@
 import axios from 'axios'
 import type { RiskReport } from './types'
 
-const BASE = 'http://localhost:8000'
+// 部署时由 Vercel 注入 VITE_API_URL（指向 Railway 后端）；本地默认 localhost。
+const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+
+export interface AnalyzeResponse {
+  task_id: string
+  status: string                 // pending / cached
+  result?: RiskReport | null     // status==='cached' 时直接带结果（秒回）
+}
 
 export async function analyzeAddress(payload: {
   address: string
@@ -9,7 +16,7 @@ export async function analyzeAddress(payload: {
   chains?: string[]
   no_hop2?: boolean
   days?: number
-}): Promise<{ task_id: string }> {
+}): Promise<AnalyzeResponse> {
   const res = await axios.post(`${BASE}/analyze`, payload)
   return res.data
 }

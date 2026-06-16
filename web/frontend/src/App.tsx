@@ -19,11 +19,16 @@ export default function App() {
     setReport(null)
     setStatus('提交分析任务...')
     try {
-      const { task_id } = await analyzeAddress({ address, chain: chain || undefined, no_hop2: noHop2 })
-      setStatus('分析中，请稍候...')
-      const result = await pollTask(task_id, (s) => setStatus(s))
-      setReport(result)
-      setStatus('')
+      const resp = await analyzeAddress({ address, chain: chain || undefined, no_hop2: noHop2 })
+      if (resp.status === 'cached' && resp.result) {
+        setReport(resp.result)        // 缓存命中，秒回
+        setStatus('')
+      } else {
+        setStatus('分析中，请稍候...')
+        const result = await pollTask(resp.task_id, (s) => setStatus(s))
+        setReport(result)
+        setStatus('')
+      }
     } catch (e: any) {
       setError(e.message || '分析失败')
     } finally {

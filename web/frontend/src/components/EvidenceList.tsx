@@ -11,12 +11,13 @@ const CATEGORY_LABEL: Record<string, string> = {
 }
 
 const CATEGORY_COLOR: Record<string, string> = {
-  blacklist: '#ef4444',
-  mixer: '#f97316',
-  opaque_bridge: '#f59e0b',
-  high_risk_exchange: '#eab308',
-  transparent_bridge_with_bl: '#84cc16',
-  transparent_bridge: '#22c55e',
+  blacklist: '#dc2626',
+  ofac_sanctioned: '#7f1d1d',
+  mixer: '#d97706',
+  opaque_bridge: '#b45309',
+  high_risk_exchange: '#a16207',
+  transparent_bridge_with_bl: '#65a30d',
+  transparent_bridge: '#1f8a5b',
 }
 
 function short(addr: string) {
