@@ -366,6 +366,15 @@ def test_mechanism_definitions():
     else:
         fail("地址精确命中", f"得到 {m}")
 
+    # 4b. CCTP：最强证据锚（burn_mint, onchain_event, 可追踪非边界）
+    cctp = classify("0x28b5a0e9c621a5badaa536219b3a228c8168cf5d")  # CCTP V2 TokenMessenger
+    if (cctp and cctp.mechanism == "burn_mint"
+            and cctp.evidence_strength.value == "strong"
+            and not cctp.is_tracing_boundary):
+        ok("CCTP 最强证据锚", "burn_mint / strong / 可追踪")
+    else:
+        fail("CCTP 分类", f"得到 {cctp}")
+
     # 5. 第 1 级：指纹认出未登记的 Tornado fork（字典做不到的事）
     fork = "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"  # 不在注册表
     m = classify(fork, event_topics=[

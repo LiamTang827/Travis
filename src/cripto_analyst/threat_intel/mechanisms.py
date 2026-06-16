@@ -65,6 +65,9 @@ class Mechanism:
     kind: Kind
     mapping_source: MappingSource
     evidence_strength: EvidenceStrength
+    mechanism: str = ""  # 资金转移机制：burn_mint / lock_mint / message_passing /
+                         # liquidity_fill / maker_fill / pooled_fill / rollup_canonical /
+                         # zk_pool / centralized_swap / mpc_custody
     resolution_method: Optional[str] = None
     dst_chains: Tuple[str, ...] = ()
     inferred: bool = False  # True = 由指纹推断（未登记部署），而非地址精确命中
@@ -89,6 +92,7 @@ def _load_registry() -> Dict[str, Mechanism]:
             kind=Kind(m["kind"]),
             mapping_source=MappingSource(m["mapping_source"]),
             evidence_strength=EvidenceStrength(m["evidence_strength"]),
+            mechanism=m.get("mechanism", ""),
             resolution_method=m.get("resolution_method"),
             dst_chains=tuple(m.get("dst_chains", [])),
         )

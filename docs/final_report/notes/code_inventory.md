@@ -63,6 +63,26 @@
   的代码实现；`is_tracing_boundary` 谓词 = report 里那个统一定义的可执行形式。
 - 仍是 Future Work：第 2 级行为/统计判别（认出全新协议，非已知协议的新部署）。
 
+## 补全（2026-06-16）
+
+- **CCTP 进 registry**：Circle TokenMessenger/MessageTransmitter V1+V2 共 4 条（地址经
+  Etherscan 标签核实），`mechanism=burn_mint / mapping_source=onchain_event /
+  evidence_strength=strong` ——光谱最左锚点、最强协议级证据。自动流入派生的
+  BRIDGE_REGISTRY（traceable=true，非边界）。registry 49→53。
+- **`mechanism` 字段补全**：一直存在 JSON 却没被加载，现已加入 Mechanism 模型 + 加载器。
+- **I/O 完整规格**：`docs/IO_SPEC.md` —— 四入口（travis-analyze / travis-trace /
+  classify / trace-case）的输入输出字段全列。
+- 测试 21/21（新增 CCTP 锚点断言）。
+
+## 仍未完成（如实记录，非正确性缺口）
+
+1. **指纹判别器未接入实时管线**：`classify_by_fingerprint` 已实现+测试，但 analyzer 主
+   流程未调用（需新增 EVMClient 取合约事件 topic + 评分热路径集成，有 API 成本）。
+   定级=增强（自动认未登记部署），非正确性缺口；系统无它仍正确。
+2. **CCTP 专用 trace-case 脚本未建**：registry 已接入（遇到即记录为 bridge_interaction），
+   但 `run_cctp_bridge_trace_case.py`（仿 stargate，走 Circle Iris attestation API）待写。
+3. **in-engine 桥解析仅 LayerZero**：其余桥的解析在各 run_*_trace_case 脚本内独立实现。
+
 ## 已知不一致（保留行为，写作时处理）
 
 - ~~**等级阈值两套**~~：✅ 已于 2026-06-11 架构重构中统一到 `config.risk_level`

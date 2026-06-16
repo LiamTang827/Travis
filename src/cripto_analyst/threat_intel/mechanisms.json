@@ -1,6 +1,42 @@
 {
   "_comment": "统一资金转移机制注册表。单一事实来源，替代旧 mixers.json + bridges.json。核心定义：mapping_source ∈ {offchain_private, zk_destroyed, none} ⇒ 追踪边界（is_tracing_boundary）。混币器与不透明桥是该定义下的同类实例，区别仅在映射不可还原的方式。字段见 mechanisms.py。",
   "mechanisms": {
+    "0xbd3fa81b58ba92a82136038b25adec7066af3155": {
+      "name": "Circle CCTP TokenMessenger V1 (ETH)",
+      "kind": "bridge",
+      "mechanism": "burn_mint",
+      "mapping_source": "onchain_event",
+      "evidence_strength": "strong",
+      "resolution_method": "cctp_iris_api",
+      "dst_chains": ["avalanche", "optimism", "arbitrum", "base", "polygon"]
+    },
+    "0x0a992d191deec32afe36203ad87d7d289a738f81": {
+      "name": "Circle CCTP MessageTransmitter V1 (ETH)",
+      "kind": "bridge",
+      "mechanism": "burn_mint",
+      "mapping_source": "onchain_event",
+      "evidence_strength": "strong",
+      "resolution_method": "cctp_iris_api",
+      "dst_chains": []
+    },
+    "0x28b5a0e9c621a5badaa536219b3a228c8168cf5d": {
+      "name": "Circle CCTP TokenMessenger V2 (ETH)",
+      "kind": "bridge",
+      "mechanism": "burn_mint",
+      "mapping_source": "onchain_event",
+      "evidence_strength": "strong",
+      "resolution_method": "cctp_iris_api",
+      "dst_chains": ["avalanche", "optimism", "arbitrum", "base", "polygon"]
+    },
+    "0x81d40f21f12a8f0e3252bccb954d722d4c464b64": {
+      "name": "Circle CCTP MessageTransmitter V2 (ETH)",
+      "kind": "bridge",
+      "mechanism": "burn_mint",
+      "mapping_source": "onchain_event",
+      "evidence_strength": "strong",
+      "resolution_method": "cctp_iris_api",
+      "dst_chains": []
+    },
     "0x47ce0c6ed5b0ce3d3a51fdb1c52dc66a7c3c2936": {
       "name": "Tornado Cash 0.1 ETH",
       "kind": "mixer",
