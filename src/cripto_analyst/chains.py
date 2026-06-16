@@ -193,7 +193,7 @@ class EVMClient:
         self.ETHERSCAN_BASE  = cfg.api_url
         self.BLOCKSCOUT_BASE = cfg.backup_url or ""
 
-    def _get(self, params: dict, base: str = None) -> Optional[dict]:
+    def _get(self, params: dict, base: str = None, _retries: int = 3) -> Optional[dict]:
         url = base or self.primary_url
         p = dict(params)
         # 只在主端点加 apikey 和 chainid（Blockscout 备用端点不需要）
@@ -205,6 +205,13 @@ class EVMClient:
         try:
             r = requests.get(url, params=p, timeout=30)
             data = r.json()
+            # 限速检测：Etherscan 限速时 result 是字符串 "Max rate limit reached"
+            # （不是 list）。并发下这会被 _fetch_one_page 当成空结果 → 静默丢交易。
+            # 这里指数退避重试，避免漏数据。
+            result = data.get("result") if isinstance(data, dict) else None
+            if isinstance(result, str) and "rate limit" in result.lower() and _retries > 0:
+                time.sleep(0.5 * (4 - _retries))   # 0.5s → 1.0s → 1.5s
+                return self._get(params, base=base, _retries=_retries - 1)
             return data
         except Exception as e:
             print(f"  [WARN] 请求失败 ({url[:50]}): {e}", file=sys.stderr)

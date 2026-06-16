@@ -36,12 +36,17 @@ class RiskReport:
     chain: str               # 主链（或 "multi-evm"）
     tron_address: str = ""
     is_blacklisted: bool = False
-    blacklist_time: str = ""
+    blacklist_time: str = ""          # 向后兼容（弃用）：旧字段混了 USDT/OFAC，改用下面两个
+    usdt_blacklist_time: str = ""     # USDT 黑名单封禁时间（仅命中时非空）
+    ofac_sdn_match: bool = False      # 是否命中 OFAC SDN 制裁名单
+    ofac_entity: str = ""             # OFAC 命中实体名（如有）
 
     # 评分结果
     risk_score: float = 0.0
     risk_level: str = "LOW"
-    taint_ratio: float = 0.0
+    # 风险依据：list_based=名单命中（确定性，与资金流无关）/ flow_based=资金流污染比例
+    risk_basis: str = "flow_based"
+    taint_ratio: float = 0.0          # 仅 flow_based 含义：被污染资金占总流量的比例
     received_exposure: float = 0.0
     sent_exposure: float = 0.0
 

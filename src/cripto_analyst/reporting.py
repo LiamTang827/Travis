@@ -173,7 +173,8 @@ def print_report(report: RiskReport, use_color: bool = True, output_dir: str = "
     # 每种稳定币明细
     if report.per_asset:
         print(f"  {'─'*66}")
-        print(f"  {'资产':<10} {'流入(窗口内)':>14} {'流出(窗口内)':>14} {'当前余额':>12} {'窗口前余额':>12} {'笔数':>6}")
+        # 数值统一为 USD 等值：稳定币 1:1 折算，原生代币(ETH等)按 ETH 价折算。
+        print(f"  {'资产':<10} {'流入($)':>14} {'流出($)':>14} {'余额($)':>12} {'窗口前($)':>12} {'笔数':>6}")
         for key in sorted(report.per_asset):
             a = report.per_asset[key]
             transit = " ⚡" if a.get("is_fast_transit") else ""
@@ -183,6 +184,11 @@ def print_report(report: RiskReport, use_color: bool = True, output_dir: str = "
             sym_label = f"{a['sym']}@{a['chain']}"
             print(f"  {sym_label:<10} {a['flow_in']:>14,.2f} {a['flow_out']:>14,.2f} "
                   f"{a['balance']:>12,.2f} {pre_str} {a.get('tx_count',0):>6}{transit}{trunc}")
+            # 原生代币额外显示真实数量（避免把 USD 估值误读为币量）
+            native_bal = a.get("end_native_balance")
+            if native_bal is not None:
+                print(f"  {'':<10} └─ 实际持有 {native_bal:,.6f} {a['sym']}")
+        print(f"  （数值为 USD 等值；原生代币的真实币量见下方 └─ 行）")
 
     # 多链分链明细
     if len(report.chains_analyzed) > 1:

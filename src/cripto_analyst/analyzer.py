@@ -9,6 +9,7 @@
 import sys
 import time
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Optional, Set, Dict, List, Tuple
 
@@ -723,7 +724,7 @@ class AMLAnalyzer:
                 print(f"  [{chain_label}] getLogs 时间过滤: {before}→{len(usdt_logs)}")
 
         report.total_transactions += len(all_txs) + len(usdt_logs)
-        print(f"  [{chain_label}] {len(normal_txs)} 普通 + {len(token_txs)} 稳定币Token"
+        print(f"  [{chain_label}] {len(normal_txs)} 普通 + {len(token_txs)} ERC20 Token"
               + (f" + {len(usdt_logs)} getLogs事件" if usdt_logs else ""))
 
         PROTOCOL_CONTRACTS = {
@@ -1063,11 +1064,20 @@ class AMLAnalyzer:
                 print(f"  [{chain_label}] 2-hop 分析 {len(hop2_nodes)} 个中间节点...")
 
             hop_d = HOP_DECAY[2]
-            for cp in hop2_nodes:
-                time.sleep(REQUEST_DELAY)
-                cp_txs = client.get_normal_txs(cp, limit=100)
-                cp_tok = client.get_token_transfers(cp, limit=100)
-                cp_risk = _score_cp_node(cp_txs + cp_tok, cp)
+
+            # 并发拉取对手方交易（I/O 密集）。原来是串行 + 每个 sleep 0.25s，
+            # 把 5 次/秒的限速额度用成了串行；这里在额度内并发，单地址快数倍。
+            # 只并行「取数」；评分和写 report.indicators 仍串行——避免对共享 report
+            # 的并发写，也无需加锁。client 用独立 requests 调用，并发安全。
+            def _fetch_cp(cp: str):
+                txs = client.get_normal_txs(cp, limit=100) + client.get_token_transfers(cp, limit=100)
+                return cp, txs
+
+            with ThreadPoolExecutor(max_workers=min(5, len(hop2_nodes))) as pool:
+                fetched = list(pool.map(_fetch_cp, hop2_nodes))
+
+            for cp, cp_all_txs in fetched:
+                cp_risk = _score_cp_node(cp_all_txs, cp)
                 if not cp_risk:
                     continue
 
@@ -1221,11 +1231,18 @@ class AMLAnalyzer:
     # ---------- 风险评分（污染比例模型）----------
     def _calculate_risk(self, report: RiskReport):
         if report.is_blacklisted:
+            # 名单命中是确定性风险（list_based），不是资金流污染。
+            # 因此不把 flow 暴露字段伪造成 1.0——它们保持默认 0（未计算），
+            # 由 risk_basis + score_breakdown 透明说明 100 分的来源。
             report.risk_score = 100
             report.risk_level = "CRITICAL"
-            report.taint_ratio = 1.0
-            report.received_exposure = 1.0
-            report.sent_exposure = 1.0
+            report.risk_basis = "list_based"
+            breakdown = {"basis": "list_based", "direct_blacklist_match": 100}
+            if report.usdt_blacklist_time:
+                breakdown["usdt_blacklist_time"] = report.usdt_blacklist_time
+            if report.ofac_sdn_match:
+                breakdown["ofac_sdn_entity"] = report.ofac_entity or "Unknown"
+            report.score_breakdown = breakdown
             return
 
         # 分母：稳定币 + ETH 折 USD，与分子保持一致（分子已含 ETH usdt_amt）
@@ -1283,6 +1300,7 @@ class AMLAnalyzer:
         report.received_exposure = round(received_taint, 4)
         report.sent_exposure     = round(sent_taint, 4)
         report.taint_ratio       = round(taint_ratio, 4)
+        report.risk_basis        = "flow_based"
         final_score = round(min(taint_ratio * 100, 100), 2)
         report.risk_score = final_score
 
@@ -1291,6 +1309,7 @@ class AMLAnalyzer:
         report.risk_level = risk_level(report.risk_score)
 
         report.score_breakdown = {
+            "basis": "flow_based",
             "received_taint_pct": round(received_taint * 100, 2),
             "sent_taint_pct":     round(sent_taint * 100, 2),
             "final_score":        final_score,
@@ -1474,16 +1493,20 @@ class AMLAnalyzer:
         if addr_norm in self.blacklist:
             info = self.blacklist[addr_norm]
             report.is_blacklisted = True
-            report.blacklist_time = info["time"]
+            report.usdt_blacklist_time = info["time"]
+            report.blacklist_time = info["time"]   # 向后兼容
             report.warnings.append(f"[!] Address is on the USDT blacklist (banned: {info['time']})")
             print(f"  [!!!] 直接命中黑名单！封禁时间: {info['time']}")
 
         if addr_norm in OFAC_SANCTIONED_ADDRS:
             ofac = OFAC_SANCTIONED[addr_norm]
             report.is_blacklisted = True
-            report.blacklist_time = "OFAC制裁"
+            report.ofac_sdn_match = True
             entity = ofac.get("entity", "Unknown")
+            report.ofac_entity = entity
             currency = ofac.get("currency", "")
+            if not report.blacklist_time:
+                report.blacklist_time = "OFAC SDN"   # 向后兼容兜底（未命中 USDT 时）
             report.warnings.append(f"[!] Address is on the OFAC SDN sanctions list (entity: {entity}, currency: {currency})")
             print(f"  [!!!] 直接命中 OFAC 制裁名单！实体: {entity}")
 
